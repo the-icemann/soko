@@ -24,11 +24,12 @@ app = FastAPI(
     title="Soko Payment Service",
     version="1.0.0",
     lifespan=lifespan,
+    root_path="/payments"
 )
 
 app.include_router(internal.router, prefix="/internal")
 app.include_router(webhook.router,  prefix="/webhook")
-app.include_router(payments.router, prefix="/payments")
+app.include_router(payments.router)
 
 
 @app.get("/health")

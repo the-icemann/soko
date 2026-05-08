@@ -8,7 +8,7 @@ from app.schemas import ProduceListingCreate, ProduceListingUpdate, ProduceListi
 from services.produce.app.core.dependencies import require_farmer
 from app.messaging import publish_event
 from services.produce.app.core.config import settings
-from app.cache import get_cached_predictions, set_cached_predictions, invalidate_predictions
+from app.core.cache import get_cached_predictions, set_cached_predictions, invalidate_predictions
 
 router = APIRouter(prefix="/produce", tags=["Produce"])
 

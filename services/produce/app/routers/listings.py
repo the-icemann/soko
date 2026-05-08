@@ -44,7 +44,7 @@ async def fetch_farmer_snapshot(farmer_id: str) -> dict:
 
 
 # ── Public — browse all active listings
-@router.get("", response_model=list[ListingOut])
+@router.get("/", response_model=list[ListingOut])
 def get_listings(
     category:  Optional[str]   = Query(default=None),
     district:  Optional[str]   = Query(default=None),
@@ -146,7 +146,7 @@ def get_my_listings(
 
 
 #  Farmer only — create listing
-@router.post("", response_model=CreateListingResponse, status_code=201,
+@router.post("/", response_model=CreateListingResponse, status_code=201,
              dependencies=[Depends(farmer_only)])
 async def create_listing(
     payload: CreateListingPayload,

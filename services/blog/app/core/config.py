@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     DATABASE_URL:     str
     INTERNAL_SECRET:  str
     REDIS_URL:        str = "redis://redis:6379/1"
-    USER_SERVICE_URL: str = "http://user-service:8002"
+    USER_SERVICE_URL: str = "http://user_service:8002"
 
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str

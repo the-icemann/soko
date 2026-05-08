@@ -15,10 +15,11 @@ app = FastAPI(
     title="Soko USSD Service",
     version="1.0.0",
     lifespan=lifespan,
+    root_path="/ussd",
     default_response_class=PlainTextResponse,
 )
 
-app.include_router(router, prefix="/ussd")
+app.include_router(router)
 
 
 @app.get("/health")

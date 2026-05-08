@@ -33,7 +33,7 @@ async def verify_stock_and_get_details(items: list, db: Session) -> list:
         for item in items:
             try:
                 res = await client.get(
-                    f"{settings.PRODUCE_SERVICE_URL}/listings/id/{item.productId}",
+                    f"{settings.PRODUCE_SERVICE_URL}/internal/listing/{item.productId}",
                     headers={"x-internal-secret": settings.INTERNAL_SECRET},
                     timeout=5.0
                 )
@@ -131,7 +131,7 @@ async def update_buyer_stats(buyer_id: str, total: float):
 
 
 # ── Buyer only — place order (checkout)
-@router.post("", response_model=OrderOut, status_code=201,
+@router.post("/", response_model=OrderOut, status_code=201,
              dependencies=[Depends(buyer_only)])
 async def checkout(
     payload: CheckoutPayload,

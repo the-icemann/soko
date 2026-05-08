@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 import httpx
 
-from app.config.config import settings
-from app.config.dependencies import internal_only
+from app.core.config import settings
+from app.core.dependencies import internal_only
 from app.db.database import get_db
 from app.helpers.templates import get_template
 from app.helpers.sms import send_sms
 from app.helpers.push import push_to_user
 from app.models.notification import Notification, NotificationType, NotificationChannel
-from app.schemas.schemas import NotifyPayload
+from app.schemas.notification import NotifyPayload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Internal"], dependencies=[Depends(internal_only)])

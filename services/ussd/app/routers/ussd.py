@@ -6,7 +6,7 @@ import africastalking
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
-from core.config import settings
+from app.core.config import settings
 
 from app.core.dependencies import get_db
 from app.models.ussd import USSDSession
@@ -31,12 +31,11 @@ MAIN_MENU = (
     "0. Exit"
 )
 
-@router.post("/session", response_class=PlainTextResponse)
 def get_or_create_session(
     session_id: str,
     phone:      str,
     db:         Session
-) -> USSDSession:
+):
     session = db.query(USSDSession).filter(
         USSDSession.session_id == session_id
     ).first()

@@ -47,20 +47,6 @@ def update_my_profile(
     db.refresh(user)
     return build_authenticated_user(user)
 
-
-@router.get("/{user_id}", response_model=FarmerProfile)
-def get_farmer_profile(
-    user_id: str,
-    x_user_id: str = Header(default=None),
-    db: Session = Depends(get_db)
-):
-    user = db.query(UserProfile).filter(UserProfile.id == uuid.UUID(user_id)).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.role not in (UserRole.farmer, UserRole.both):
-        raise HTTPException(status_code=400, detail="User is not a farmer")
-    return build_farmer_profile(user, viewer_id=x_user_id, db=db)
-
 @router.get("/farmers", response_model=list[FarmerProfile])
 def get_farmers(
     district:  Optional[str]  = Query(default=None),
@@ -103,3 +89,17 @@ def get_farmers(
         build_farmer_profile(farmer, viewer_id=x_user_id, db=db)
         for farmer in farmers
     ]
+
+@router.get("/{user_id}", response_model=FarmerProfile)
+def get_farmer_profile(user_id: str, db: Session = Depends(get_db)):
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user = db.query(UserProfile).filter(UserProfile.id == uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role not in (UserRole.farmer, UserRole.both):
+        raise HTTPException(status_code=404, detail="User not a farmer or both")
+    return build_farmer_profile(user, viewer_id=user_id, db=db)

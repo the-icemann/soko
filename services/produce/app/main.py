@@ -14,12 +14,13 @@ app = FastAPI(
     title="Soko Produce Service",
     version="1.0.0",
     lifespan=lifespan,
+    root_path="/listings"
 )
 
 app.include_router(internal.router, prefix="/internal")
-app.include_router(images.router,   prefix="/listings")
-app.include_router(reviews.router,  prefix="/listings")
-app.include_router(listings.router, prefix="/listings")
+app.include_router(images.router)
+app.include_router(reviews.router)
+app.include_router(listings.router)
 
 
 @app.get("/health")

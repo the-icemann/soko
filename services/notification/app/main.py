@@ -14,6 +14,7 @@ app = FastAPI(
     title="Soko Notification Service",
     version="1.0.0",
     lifespan=lifespan,
+    root_path="/notifications"
 )
 
 app.include_router(internal.router,      prefix="/internal")

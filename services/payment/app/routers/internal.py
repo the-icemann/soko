@@ -32,7 +32,7 @@ async def fetch_buyer_details(buyer_id: str) -> dict:
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(
-                f"{settings.USER_SERVICE_URL}/users/{buyer_id}",
+                f"{settings.USER_SERVICE_URL}/internal/user/{buyer_id}",
                 headers={"x-internal-secret": settings.INTERNAL_SECRET},
                 timeout=5.0
             )

@@ -45,7 +45,7 @@ async def fetch_author(author_id: str) -> dict:
 
 
 # ── Public — list posts (paginated + filtered)
-@router.get("", response_model=list[PostOut])
+@router.get("/", response_model=list[PostOut])
 def get_posts(
     category:  Optional[str] = Query(default=None),
     tag:       Optional[str] = Query(default=None),
@@ -131,7 +131,7 @@ def get_my_posts(
 
 
 # ── Authenticated — create post
-@router.post("", response_model=PostOut, status_code=201)
+@router.post("/", response_model=PostOut, status_code=201)
 async def create_post(
     payload: CreatePostPayload,
     user_id: str     = Depends(get_current_user_id),

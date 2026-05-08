@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.db.database import Base, engine
-from app.routers import follows,internal,profile,reviews,settings
+from app.routers import follows, internal, profile, reviews, settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,9 +15,12 @@ app = FastAPI(
     lifespan=lifespan,
     root_path="/users",
 )
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
-app.include_router(follows)
-app.include_router(internal)
-app.include_router(profile)
-app.include_router(settings)
-app.include_router(reviews)
+app.include_router(follows.router)
+app.include_router(internal.router)
+app.include_router(profile.router)
+app.include_router(settings.router)
+app.include_router(reviews.router)

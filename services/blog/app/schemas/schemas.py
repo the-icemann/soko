@@ -120,3 +120,7 @@ class CreateCommentPayload(BaseModel):
         if not v.strip():
             raise ValueError("Comment cannot be empty")
         return v.strip()
+
+class ImageUploadOut(BaseModel):
+    url:       str
+    public_id: str

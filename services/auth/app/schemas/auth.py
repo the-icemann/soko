@@ -16,7 +16,7 @@ class RegisterPayload(BaseModel):
     phone: str
     district: str
     role: UserRole
-    avatar_url: Optional[str]
+    avatar_url: Optional[str] =None
 
     specialties: Optional[List[str]] = None
     interests: Optional[List[str]] = None

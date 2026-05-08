@@ -9,8 +9,9 @@ import uuid
 router = APIRouter(tags=["Internal"], dependencies=[Depends(internal_only)])
 
 
-@router.post("", status_code=201)
+@router.post("/", status_code=201)
 def create_user(payload: CreateUserPayload, db: Session = Depends(get_db)):
+    """ Auth Service calls this after creating credentials. """
     profile = UserProfile(
         id=uuid.UUID(payload.id),
         email=payload.email,
@@ -71,3 +72,28 @@ def update_buyer_stats(
 
     db.commit()
     return {"updated": True}
+
+@router.get("/user/{user_id}")
+def get_user_for_service(user_id: str, db: Session = Depends(get_db)):
+    """
+    Called by Payment Service and Produce Service to fetch
+    name, email, phone for a user of any role.
+    Protected by internal_only.
+    """
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    user = db.query(UserProfile).filter(UserProfile.id == uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "name":     user.name,
+        "email":    user.email,
+        "phone":    user.phone,
+        "district": user.district,
+        "verified": user.verified,
+        "role":     user.role.value,
+    }

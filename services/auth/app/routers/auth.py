@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, Header
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.user import AuthCredential, UserRole as DBUserRole
@@ -43,7 +43,7 @@ async def register(payload: RegisterPayload, db: Session = Depends(get_db)):
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(
-                f"{settings.USER_SERVICE_URL}/users",
+                f"{settings.USER_SERVICE_URL}/",
                 json={
                     "id":          str(cred.id),
                     "email":       cred.email,
@@ -107,18 +107,22 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/verify-token", response_model=VerifyTokenResponse)
-def verify_token(payload: VerifyTokenRequest):
-    """Called by the Gateway only — not the frontend."""
-    data = decode_token(payload.token, token_type="access")
+@router.get("/verify-token")
+def verify_token_gateway(
+    response: Response,
+    authorization: str = Header(...)
+):
+    """Called by nginx auth_request — verifies JWT and injects user headers."""
+    token = authorization.replace("Bearer ", "")
+    data = decode_token(token, token_type="access")
     if not data:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return VerifyTokenResponse(
-        valid=True,
-        user_id=data["sub"],
-        role=data["role"],
-        email=data["email"]
-    )
+
+    response.headers["x-user-id"]    = data["sub"]
+    response.headers["x-user-role"]  = data["role"]
+    response.headers["x-user-email"] = data["email"]
+
+    return {"valid": True}
 
 
 @router.post("/refresh", response_model=AuthTokens)
@@ -139,7 +143,7 @@ def refresh(payload: VerifyTokenRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     return AuthTokens(
-        access_token=create_access_token(str(user.id), user.role.value, user.email),  
+        access_token=create_access_token(str(user.id), user.role.value, user.email),
         refresh_token=create_refresh_token(str(user.id))
     )
 

@@ -2,10 +2,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.config.dependencies import internal_only
 from app.db.database import get_db
 from app.models.produce import Listing, ListingStatus
-from app.schemas.schemas import StockUpdatePayload
+from app.schemas.produce import StockUpdatePayload,ListingOut
+from app.core.dependencies import internal_only
+from app.helpers.builders import build_listing_out
 
 router = APIRouter(tags=["Internal"], dependencies=[Depends(internal_only)])
 
@@ -41,3 +42,23 @@ def restore_stock(payload: StockUpdatePayload, db: Session = Depends(get_db)):
 
     db.commit()
     return {"available_qty": listing.available_qty, "status": listing.status.value}
+
+@router.get("/listing/{listing_id}", response_model=ListingOut)
+def get_listing_by_id(
+    listing_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Called by Order Service to verify stock and fetch product snapshot
+    before checkout. Protected by internal_only dependency.
+    """
+    try:
+        lid = uuid.UUID(listing_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid listing ID")
+
+    listing = db.query(Listing).filter(Listing.id == lid).first()
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+
+    return build_listing_out(listing)

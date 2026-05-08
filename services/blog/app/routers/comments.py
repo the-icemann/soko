@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.orm import Session
 
-from app.config.dependencies import get_current_user_id
+from app.core.dependencies import get_current_user_id
 from app.db.database import get_db
 from app.helpers.builders import build_comment_out, make_initials
 from app.helpers.cache import (

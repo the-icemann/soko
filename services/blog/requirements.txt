@@ -9,3 +9,4 @@ python-jose[cryptography]==3.3.0
 aio_pika==9.4.1
 python-multipart==0.0.9
 redis
+cloudinary

@@ -1,16 +1,21 @@
 version: "3.9"
 
 networks:
-  agrimarket_net:
+  soko_net:
     driver: bridge
 
 volumes:
   auth_db_data:
-  farmer_db_data:
-  buyer_db_data:
+  user_db_data:
   produce_db_data:
-  recoo_db_data:
-  rabbitmq_data:
+  order_db_data:
+  payment_db_data:
+  notification_db_data:
+  message_db_data:
+  blog_db_data:
+  ussd_db_data:
+  recommendation_db_data:
+  redis_data:
 
 
 services:
@@ -27,50 +32,37 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - auth_service
-      - farmer_service
-      - buyer_service
+      - user_service
       - produce_service
+      - order_service
+      - payment_service
+      - notification_service
+      - message_service
+      - blog_service
+      - ussd_service
       - recommendation_service
     networks:
-      - agrimarket_net
+      - soko_net
+    restart: on-failure
 
   # ─────────────────────────────────────────
-  # CACHE
+  # REDIS (shared cache)
   # ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: redis
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
     networks:
-      - agrimarket_net
+      - soko_net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
-
-  # ─────────────────────────────────────────
-  # MESSAGE BROKER
-  # ─────────────────────────────────────────
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: rabbitmq
-    ports:
-      - "127.0.0.1:5672:5672"    # AMQP
-      - "127.0.0.1:15672:15672"  # Management UI → http://localhost:15672
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    networks:
-      - agrimarket_net
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    restart: on-failure
 
   # ─────────────────────────────────────────
   # AUTH SERVICE  :8001
@@ -79,13 +71,13 @@ services:
     image: postgres:15-alpine
     container_name: auth_db
     environment:
-      POSTGRES_USER: auth_user
+      POSTGRES_USER:     auth_user
       POSTGRES_PASSWORD: auth_pass
-      POSTGRES_DB: auth_db
+      POSTGRES_DB:       auth_db
     volumes:
       - auth_db_data:/var/lib/postgresql/data
     networks:
-      - agrimarket_net
+      - soko_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
       interval: 5s
@@ -97,108 +89,66 @@ services:
     container_name: auth_service
     ports:
       - "127.0.0.1:8001:8001"
+    env_file: ./services/auth/.env
     environment:
-      DATABASE_URL: postgresql://auth_user:auth_pass@auth_db:5432/auth_db
-      SECRET_KEY: supersecretkey_change_in_prod
-      ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 10080
+      DATABASE_URL:      postgresql://auth_user:auth_pass@auth_db:5432/auth_db
+      USER_SERVICE_URL:  http://user_service:8002
     depends_on:
-      auth_db:
+      auth_db: 
         condition: service_healthy
     networks:
-      - agrimarket_net
+      - soko_net
     restart: on-failure
 
   # ─────────────────────────────────────────
-  # FARMER SERVICE  :8002
+  # USER SERVICE  :8002
   # ─────────────────────────────────────────
-  farmer_db:
+  user_db:
     image: postgres:15-alpine
-    container_name: farmer_db
+    container_name: user_db
     environment:
-      POSTGRES_USER: farmer_user
-      POSTGRES_PASSWORD: farmer_pass
-      POSTGRES_DB: farmer_db
+      POSTGRES_USER:     user_user
+      POSTGRES_PASSWORD: user_pass
+      POSTGRES_DB:       user_db
     volumes:
-      - farmer_db_data:/var/lib/postgresql/data
+      - user_db_data:/var/lib/postgresql/data
     networks:
-      - agrimarket_net
+      - soko_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U farmer_user -d farmer_db"]
+      test: ["CMD-SHELL", "pg_isready -U user_user -d user_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  farmer_service:
-    build: ./services/farmer   # replicate auth/ structure here
-    container_name: farmer_service
+  user_service:
+    build: ./services/user
+    container_name: user_service
     ports:
       - "127.0.0.1:8002:8002"
+    env_file: ./services/user/.env
     environment:
-      DATABASE_URL: postgresql://farmer_user:farmer_pass@farmer_db:5432/farmer_db
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      DATABASE_URL: postgresql://user_user:user_pass@user_db:5432/user_db
     depends_on:
-      farmer_db:
-        condition: service_healthy
-      rabbitmq:
+      user_db:
         condition: service_healthy
     networks:
-      - agrimarket_net
+      - soko_net
     restart: on-failure
 
   # ─────────────────────────────────────────
-  # BUYER SERVICE  :8003
-  # ─────────────────────────────────────────
-  buyer_db:
-    image: postgres:15-alpine
-    container_name: buyer_db
-    environment:
-      POSTGRES_USER: buyer_user
-      POSTGRES_PASSWORD: buyer_pass
-      POSTGRES_DB: buyer_db
-    volumes:
-      - buyer_db_data:/var/lib/postgresql/data
-    networks:
-      - agrimarket_net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U buyer_user -d buyer_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  buyer_service:
-    build: ./services/buyer
-    container_name: buyer_service
-    ports:
-      - "127.0.0.1:8003:8003"
-    environment:
-      DATABASE_URL: postgresql://buyer_user:buyer_pass@buyer_db:5432/buyer_db
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      PRODUCE_SERVICE_URL: http://produce_service:8004
-      INTERNAL_API_KEY: soko-internal-dev-key
-    depends_on:
-      buyer_db:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - agrimarket_net
-    restart: on-failure
-
-  # ─────────────────────────────────────────
-  # PRODUCE SERVICE  :8004
+  # PRODUCE SERVICE  :8003
   # ─────────────────────────────────────────
   produce_db:
     image: postgres:15-alpine
     container_name: produce_db
     environment:
-      POSTGRES_USER: produce_user
+      POSTGRES_USER:     produce_user
       POSTGRES_PASSWORD: produce_pass
-      POSTGRES_DB: produce_db
+      POSTGRES_DB:       produce_db
     volumes:
       - produce_db_data:/var/lib/postgresql/data
     networks:
-      - agrimarket_net
+      - soko_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U produce_user -d produce_db"]
       interval: 5s
@@ -209,40 +159,275 @@ services:
     build: ./services/produce
     container_name: produce_service
     ports:
-      - "127.0.0.1:8004:8004"
+      - "127.0.0.1:8003:8003"
+    env_file: ./services/produce/.env
     environment:
-      DATABASE_URL: postgresql://produce_user:produce_pass@produce_db:5432/produce_db
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      REDIS_URL: redis://redis:6379/1
-      FARMER_SERVICE_URL: http://farmer_service:8002
-      INTERNAL_API_KEY: soko-internal-dev-key
+      DATABASE_URL:      postgresql://produce_user:produce_pass@produce_db:5432/produce_db
+      REDIS_URL:         redis://redis:6379/0
+      USER_SERVICE_URL:  http://user_service:8002
     depends_on:
       produce_db:
-        condition: service_healthy
-      rabbitmq:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - agrimarket_net
+      - soko_net
     restart: on-failure
 
   # ─────────────────────────────────────────
-  # RECOMMENDATION SERVICE  :8005
+  # ORDER SERVICE  :8004
   # ─────────────────────────────────────────
-  recoo_db:
+  order_db:
     image: postgres:15-alpine
-    container_name: recoo_db
+    container_name: order_db
     environment:
-      POSTGRES_USER: recoo_user
-      POSTGRES_PASSWORD: recoo_pass
-      POSTGRES_DB: recoo_db
+      POSTGRES_USER:     order_user
+      POSTGRES_PASSWORD: order_pass
+      POSTGRES_DB:       order_db
     volumes:
-      - recoo_db_data:/var/lib/postgresql/data
+      - order_db_data:/var/lib/postgresql/data
     networks:
-      - agrimarket_net
+      - soko_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U recoo_user -d recoo_db"]
+      test: ["CMD-SHELL", "pg_isready -U order_user -d order_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  order_service:
+    build: ./services/order
+    container_name: order_service
+    ports:
+      - "127.0.0.1:8004:8004"
+    env_file: ./services/order/.env
+    environment:
+      DATABASE_URL:             postgresql://order_user:order_pass@order_db:5432/order_db
+      PRODUCE_SERVICE_URL:      http://produce_service:8003
+      USER_SERVICE_URL:         http://user_service:8002
+      PAYMENT_SERVICE_URL:      http://payment_service:8005
+      NOTIFICATION_SERVICE_URL: http://notification_service:8007
+    depends_on:
+      order_db:
+        condition: service_healthy
+      produce_service:
+        condition: service_started
+      payment_service:
+        condition: service_started
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # PAYMENT SERVICE  :8005
+  # ─────────────────────────────────────────
+  payment_db:
+    image: postgres:15-alpine
+    container_name: payment_db
+    environment:
+      POSTGRES_USER:     payment_user
+      POSTGRES_PASSWORD: payment_pass
+      POSTGRES_DB:       payment_db
+    volumes:
+      - payment_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment_user -d payment_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  payment_service:
+    build: ./services/payment
+    container_name: payment_service
+    ports:
+      - "127.0.0.1:8005:8005"
+    env_file: ./services/payment/.env
+    environment:
+      DATABASE_URL:             postgresql://payment_user:payment_pass@payment_db:5432/payment_db
+      ORDER_SERVICE_URL:        http://order_service:8004
+      USER_SERVICE_URL:         http://user_service:8002
+      NOTIFICATION_SERVICE_URL: http://notification_service:8007
+    depends_on:
+      payment_db:
+        condition: service_healthy
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # MESSAGE SERVICE  :8006
+  # ─────────────────────────────────────────
+  message_db:
+    image: postgres:15-alpine
+    container_name: message_db
+    environment:
+      POSTGRES_USER:     message_user
+      POSTGRES_PASSWORD: message_pass
+      POSTGRES_DB:       message_db
+    volumes:
+      - message_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U message_user -d message_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  message_service:
+    build: ./services/message
+    container_name: message_service
+    ports:
+      - "127.0.0.1:8006:8006"
+    env_file: ./services/message/.env
+    environment:
+      DATABASE_URL:             postgresql://message_user:message_pass@message_db:5432/message_db
+      USER_SERVICE_URL:         http://user_service:8002
+      PRODUCE_SERVICE_URL:      http://produce_service:8003
+      NOTIFICATION_SERVICE_URL: http://notification_service:8007
+    depends_on:
+      message_db:
+        condition: service_healthy
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # NOTIFICATION SERVICE  :8007
+  # ─────────────────────────────────────────
+  notification_db:
+    image: postgres:15-alpine
+    container_name: notification_db
+    environment:
+      POSTGRES_USER:     notification_user
+      POSTGRES_PASSWORD: notification_pass
+      POSTGRES_DB:       notification_db
+    volumes:
+      - notification_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification_user -d notification_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  notification_service:
+    build: ./services/notification
+    container_name: notification_service
+    ports:
+      - "127.0.0.1:8007:8007"
+    env_file: ./services/notification/.env
+    environment:
+      DATABASE_URL:     postgresql://notification_user:notification_pass@notification_db:5432/notification_db
+      USER_SERVICE_URL: http://user_service:8002
+    depends_on:
+      notification_db:
+        condition: service_healthy
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # BLOG SERVICE  :8008
+  # ─────────────────────────────────────────
+  blog_db:
+    image: postgres:15-alpine
+    container_name: blog_db
+    environment:
+      POSTGRES_USER:     blog_user
+      POSTGRES_PASSWORD: blog_pass
+      POSTGRES_DB:       blog_db
+    volumes:
+      - blog_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blog_user -d blog_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  blog_service:
+    build: ./services/blog
+    container_name: blog_service
+    ports:
+      - "127.0.0.1:8008:8008"
+    env_file: ./services/blog/.env
+    environment:
+      DATABASE_URL:     postgresql://blog_user:blog_pass@blog_db:5432/blog_db
+      REDIS_URL:        redis://redis:6379/1
+      USER_SERVICE_URL: http://user_service:8002
+    depends_on:
+      blog_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # USSD SERVICE  :8009
+  # ─────────────────────────────────────────
+  ussd_db:
+    image: postgres:15-alpine
+    container_name: ussd_db
+    environment:
+      POSTGRES_USER:     ussd_user
+      POSTGRES_PASSWORD: ussd_pass
+      POSTGRES_DB:       ussd_db
+    volumes:
+      - ussd_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ussd_user -d ussd_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ussd_service:
+    build: ./services/ussd
+    container_name: ussd_service
+    ports:
+      - "127.0.0.1:8009:8009"
+    env_file: ./services/ussd/.env
+    environment:
+      DATABASE_URL:             postgresql://ussd_user:ussd_pass@ussd_db:5432/ussd_db
+      PRODUCE_SERVICE_URL:      http://produce_service:8003
+      ORDER_SERVICE_URL:        http://order_service:8004
+      AUTH_SERVICE_URL:         http://auth_service:8001
+      USER_SERVICE_URL:         http://user_service:8002
+      NOTIFICATION_SERVICE_URL: http://notification_service:8007
+    depends_on:
+      ussd_db:
+        condition: service_healthy
+      auth_service:
+        condition: service_started
+      produce_service:
+        condition: service_started
+    networks:
+      - soko_net
+    restart: on-failure
+
+  # ─────────────────────────────────────────
+  # RECOMMENDATION SERVICE  :8010
+  # ─────────────────────────────────────────
+  recommendation_db:
+    image: postgres:15-alpine
+    container_name: recommendation_db
+    environment:
+      POSTGRES_USER:     rec_user
+      POSTGRES_PASSWORD: rec_pass
+      POSTGRES_DB:       rec_db
+    volumes:
+      - recommendation_db_data:/var/lib/postgresql/data
+    networks:
+      - soko_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rec_user -d rec_db"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -251,20 +436,19 @@ services:
     build: ./services/recommendation
     container_name: recommendation_service
     ports:
-      - "127.0.0.1:8005:8005"
+      - "127.0.0.1:8010:8010"
+    env_file: ./services/recommendation/.env
     environment:
-      DATABASE_URL: postgresql://recoo_user:recoo_pass@recoo_db:5432/recoo_db
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: supersecretkey_change_in_prod
-      ALGORITHM: HS256
+      DATABASE_URL:        postgresql://rec_user:rec_pass@recommendation_db:5432/rec_db
+      REDIS_URL:           redis://redis:6379/2
+      USER_SERVICE_URL:    http://user_service:8002
+      PRODUCE_SERVICE_URL: http://produce_service:8003
+      ORDER_SERVICE_URL:   http://order_service:8004
     depends_on:
-      recoo_db:
-        condition: service_healthy
-      rabbitmq:
+      recommendation_db:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - agrimarket_net
+      - soko_net
     restart: on-failure
