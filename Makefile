@@ -38,12 +38,22 @@ bridge-network:
 # ── SETUP ─────────────────────────────────────────────────────────────────────
 
 install:
-	python3 -m venv $(PRICE_VENV)   && $(PRICE_VENV)/bin/pip install -q -r $(ML_DIR)/price-prediction-service/requirements.txt
-	python3 -m venv $(REC_VENV)     && $(REC_VENV)/bin/pip install -q -r $(ML_DIR)/recommendation-service/requirements.txt
-	python3 -m venv $(GATEWAY_VENV) && $(GATEWAY_VENV)/bin/pip install -q -r $(ML_DIR)/ml-gateway-service/requirements.txt
-	python3 -m venv $(AGENT_VENV)   && $(AGENT_VENV)/bin/pip install -q -r $(ML_DIR)/kafka-agent/requirements.txt
-	python3 -m venv $(DATA_VENV)    && $(DATA_VENV)/bin/pip install -q -r $(ML_DIR)/data-generator/requirements.txt
+	python3.12 -m venv $(PRICE_VENV)   && $(PRICE_VENV)/bin/pip install -q -r $(ML_DIR)/price-prediction-service/requirements.txt
+	python3.12 -m venv $(REC_VENV)     && $(REC_VENV)/bin/pip install -q -r $(ML_DIR)/recommendation-service/requirements.txt
+	python3.12 -m venv $(GATEWAY_VENV) && $(GATEWAY_VENV)/bin/pip install -q -r $(ML_DIR)/ml-gateway-service/requirements.txt
+	python3.12 -m venv $(AGENT_VENV)   && $(AGENT_VENV)/bin/pip install -q -r $(ML_DIR)/kafka-agent/requirements.txt
+	python3.12 -m venv $(DATA_VENV)    && $(DATA_VENV)/bin/pip install -q -r $(ML_DIR)/data-generator/requirements.txt
 	@echo "All ML dependencies installed."
+	@echo "Installing CmdStan 2.33.1 into Prophet's internal path (one-time, ~400 MB)..."
+	$(PRICE_VENV)/bin/python -c " \
+	  import prophet, pathlib, cmdstanpy; \
+	  d = pathlib.Path(prophet.__file__).parent / 'stan_model'; \
+	  target = d / 'cmdstan-2.33.1'; \
+	  d.mkdir(parents=True, exist_ok=True); \
+	  (print('CmdStan 2.33.1 already present, skipping.') if (target / 'Makefile').exists() \
+	   else (print('Downloading + compiling CmdStan 2.33.1...'), \
+	         cmdstanpy.install_cmdstan(dir=str(d), version='2.33.1'), \
+	         print('CmdStan 2.33.1 installed.')))"
 
 generate-data:
 	@mkdir -p $(ML_DIR)/recommendation-service/data/raw
