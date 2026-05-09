@@ -71,16 +71,15 @@ class FarmerProfile(BaseModel):
     verified:       bool
     farmerBio:      Optional[str]
     farmName:       Optional[str]
+    specialties:    List[str]        
     memberSince:    str
     totalListings:  int
     totalSales:     int
     averageRating:  float
     totalReviews:   int
     responseTime:   Optional[str]
-    # Viewer-relative flags
     isFollowedByMe: Optional[bool] = None
-    isRatedByMe:    Optional[int]  = None   # 1–5 or null
-
+    isRatedByMe:    Optional[int]  = None
 
 # ── FarmerReview
 class FarmerReviewOut(BaseModel):
