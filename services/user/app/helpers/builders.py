@@ -60,6 +60,11 @@ def build_farmer_profile(
         ).first()
         is_rated = existing.rating if existing else None
 
+    specialties = (
+        [s.strip() for s in user.specialties.split(",") if s.strip()]
+        if user.specialties else []
+    )
+
     return FarmerProfile(
         id=str(user.id),
         name=user.full_name or "",
@@ -70,6 +75,7 @@ def build_farmer_profile(
         verified=user.verified,
         farmerBio=user.farmer_bio,
         farmName=user.farm_name,
+        specialties=specialties,             
         memberSince=user.created_at.isoformat(),
         totalListings=fs.total_listings if fs else 0,
         totalSales=fs.total_sales       if fs else 0,

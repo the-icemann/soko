@@ -18,7 +18,7 @@ app = FastAPI(
 )
 
 app.include_router(internal.router,      prefix="/internal")
-app.include_router(notifications.router, prefix="/notifications")
+app.include_router(notifications.router)
 
 
 @app.get("/health")
