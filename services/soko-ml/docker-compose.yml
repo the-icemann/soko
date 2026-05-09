@@ -1,0 +1,243 @@
+networks:
+  soko-ml-network:
+    driver: bridge
+  soko-ml-bridge:
+    external: true
+
+volumes:
+  redis-data:
+  kafka-data:
+  zookeeper-data:
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: soko-ml-zookeeper
+    networks:
+      - soko-ml-network
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo srvr | nc localhost 2181 | grep -q Mode"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: soko-ml-kafka
+    networks:
+      soko-ml-network: {}
+      soko-ml-bridge:
+        aliases:
+          - kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 30s
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: soko-ml-kafka-init
+    networks:
+      - soko-ml-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.transactions     --partitions 6 --replication-factor 1 --config retention.ms=604800000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.interactions    --partitions 6 --replication-factor 1 --config retention.ms=259200000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.price.requests  --partitions 3 --replication-factor 1 --config retention.ms=86400000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.price.results   --partitions 3 --replication-factor 1 --config retention.ms=86400000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.ml.events       --partitions 2 --replication-factor 1 --config retention.ms=1209600000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.dlq             --partitions 2 --replication-factor 1 --config retention.ms=2592000000
+      echo 'All Kafka topics created.'
+      "
+    restart: on-failure
+
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    container_name: soko-ml-redis
+    networks:
+      - soko-ml-network
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── ML Services ───────────────────────────────────────────────────────────────
+
+  price-prediction-service:
+    build:
+      context: ./price-prediction-service
+      dockerfile: Dockerfile
+    container_name: soko-ml-price
+    hostname: price-prediction-service
+    networks:
+      - soko-ml-network
+    ports:
+      - "${PRICE_SERVICE_PORT:-8081}:8001"
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      - KAFKA_PRICE_REQUEST_TOPIC=${KAFKA_PRICE_REQUEST_TOPIC:-soko.price.requests}
+      - KAFKA_PRICE_RESULT_TOPIC=${KAFKA_PRICE_RESULT_TOPIC:-soko.price.results}
+      - MODEL_DIR=${MODEL_DIR:-/app/models}
+      - PRICE_CACHE_TTL_SECONDS=${PRICE_CACHE_TTL_SECONDS:-86400}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=price-prediction-service
+    volumes:
+      - ./price-prediction-service/models:/app/models:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  recommendation-service:
+    build:
+      context: ./recommendation-service
+      dockerfile: Dockerfile
+    container_name: soko-ml-rec
+    hostname: recommendation-service
+    networks:
+      - soko-ml-network
+    ports:
+      - "${REC_SERVICE_PORT:-8082}:8002"
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      - KAFKA_INTERACTION_TOPIC=${KAFKA_INTERACTION_TOPIC:-soko.interactions}
+      - FARMERS_DATA_PATH=${FARMERS_DATA_PATH:-/app/data/raw/farmers.csv}
+      - BUYERS_DATA_PATH=${BUYERS_DATA_PATH:-/app/data/raw/buyers.csv}
+      - REC_CACHE_TTL_SECONDS=${REC_CACHE_TTL_SECONDS:-3600}
+      - DEFAULT_TOP_N=${DEFAULT_TOP_N:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=recommendation-service
+    volumes:
+      - ./recommendation-service/data:/app/data:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ml-gateway-service:
+    build:
+      context: ./ml-gateway-service
+      dockerfile: Dockerfile
+    container_name: soko-ml-gateway
+    hostname: ml-gateway-service
+    networks:
+      soko-ml-network: {}
+      soko-ml-bridge:
+        aliases:
+          - ml-gateway
+    ports:
+      - "${GATEWAY_PORT:-8080}:8000"
+    environment:
+      - PRICE_SERVICE_URL=http://price-prediction-service:8001
+      - REC_SERVICE_URL=http://recommendation-service:8002
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=ml-gateway-service
+    depends_on:
+      price-prediction-service:
+        condition: service_healthy
+      recommendation-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kafka-agent:
+    build:
+      context: ./kafka-agent
+      dockerfile: Dockerfile
+    container_name: soko-ml-kafka-agent
+    hostname: kafka-agent
+    networks:
+      - soko-ml-network
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      - KAFKA_PRICE_REQUEST_TOPIC=${KAFKA_PRICE_REQUEST_TOPIC:-soko.price.requests}
+      - KAFKA_PRICE_RESULT_TOPIC=${KAFKA_PRICE_RESULT_TOPIC:-soko.price.results}
+      - KAFKA_TRANSACTION_TOPIC=${KAFKA_TRANSACTION_TOPIC:-soko.transactions}
+      - KAFKA_INTERACTION_TOPIC=${KAFKA_INTERACTION_TOPIC:-soko.interactions}
+      - KAFKA_ML_EVENTS_TOPIC=${KAFKA_ML_EVENTS_TOPIC:-soko.ml.events}
+      - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-soko.dlq}
+      - PRICE_SERVICE_URL=http://price-prediction-service:8001
+      - REC_SERVICE_URL=http://recommendation-service:8002
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=kafka-agent
+    depends_on:
+      kafka:
+        condition: service_healthy
+      price-prediction-service:
+        condition: service_healthy
+      recommendation-service:
+        condition: service_healthy
+    restart: unless-stopped

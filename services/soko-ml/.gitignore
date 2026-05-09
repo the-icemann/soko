@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Trained model files (large binaries)
+price-prediction-service/models/*.pkl
+
+# Generated data (reproducible via make generate-data)
+recommendation-service/data/raw/*.csv
+price-prediction-service/data/raw/*.csv
+
+# Environment config (contains secrets)
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker
+.docker/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

@@ -3,6 +3,8 @@ version: "3.9"
 networks:
   soko_net:
     driver: bridge
+  soko-ml-bridge:
+    external: true
 
 volumes:
   auth_db_data:
@@ -165,13 +167,15 @@ services:
       DATABASE_URL:      postgresql://produce_user:produce_pass@produce_db:5432/produce_db
       REDIS_URL:         redis://redis:6379/0
       USER_SERVICE_URL:  http://user_service:8002
+      ML_GATEWAY_URL:    http://ml-gateway:8000
     depends_on:
       produce_db:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - soko_net
+      soko_net: {}
+      soko-ml-bridge: {}
     restart: on-failure
 
   # ─────────────────────────────────────────
@@ -201,11 +205,13 @@ services:
       - "127.0.0.1:8004:8004"
     env_file: ./services/order/.env
     environment:
-      DATABASE_URL:             postgresql://order_user:order_pass@order_db:5432/order_db
-      PRODUCE_SERVICE_URL:      http://produce_service:8003
-      USER_SERVICE_URL:         http://user_service:8002
-      PAYMENT_SERVICE_URL:      http://payment_service:8005
-      NOTIFICATION_SERVICE_URL: http://notification_service:8007
+      DATABASE_URL:              postgresql://order_user:order_pass@order_db:5432/order_db
+      PRODUCE_SERVICE_URL:       http://produce_service:8003
+      USER_SERVICE_URL:          http://user_service:8002
+      PAYMENT_SERVICE_URL:       http://payment_service:8005
+      NOTIFICATION_SERVICE_URL:  http://notification_service:8007
+      KAFKA_BOOTSTRAP_SERVERS:   kafka:9092
+      KAFKA_TRANSACTION_TOPIC:   soko.transactions
     depends_on:
       order_db:
         condition: service_healthy
@@ -214,7 +220,8 @@ services:
       payment_service:
         condition: service_started
     networks:
-      - soko_net
+      soko_net: {}
+      soko-ml-bridge: {}
     restart: on-failure
 
   # ─────────────────────────────────────────

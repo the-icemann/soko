@@ -1,0 +1,48 @@
+version: "3.9"
+
+# Development overrides: hot reload + verbose logging
+services:
+  price-prediction-service:
+    build:
+      context: ./price-prediction-service
+      dockerfile: Dockerfile
+      target: development
+    volumes:
+      - ./price-prediction-service/src:/app/src
+      - ./price-prediction-service/models:/app/models
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  recommendation-service:
+    build:
+      context: ./recommendation-service
+      dockerfile: Dockerfile
+      target: development
+    volumes:
+      - ./recommendation-service/src:/app/src
+      - ./recommendation-service/data:/app/data
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8002 --reload
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  ml-gateway-service:
+    build:
+      context: ./ml-gateway-service
+      dockerfile: Dockerfile
+      target: development
+    volumes:
+      - ./ml-gateway-service/src:/app/src
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  kafka-agent:
+    build:
+      context: ./kafka-agent
+      dockerfile: Dockerfile
+      target: development
+    volumes:
+      - ./kafka-agent/src:/app/src
+    environment:
+      - LOG_LEVEL=DEBUG

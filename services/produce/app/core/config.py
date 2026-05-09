@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME:  str
     CLOUDINARY_API_KEY:     str
     CLOUDINARY_API_SECRET:  str
+    ML_GATEWAY_URL:         str = ""  # Set to http://ml-gateway:8000 when ML stack is running
 
     class Config:
         env_file = ".env"

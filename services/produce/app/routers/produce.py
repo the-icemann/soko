@@ -25,26 +25,93 @@ async def _fetch_farmer_name(user_id: str) -> str | None:
     return None
 
 
-# ── GET /produce/prices/predictions — stub for frontend price cards ───
+# Maps produce categories to the nearest ML crop for price forecast enrichment
+_CATEGORY_TO_ML_CROP: dict[str, str] = {
+    "Grains":      "maize_grain",
+    "Vegetables":  "tomatoes",
+}
+
+# Maps district keywords to ML market names (case-insensitive prefix match)
+_DISTRICT_TO_ML_MARKET: dict[str, str] = {
+    "kampala": "Kisenyi_Kampala",
+    "gulu":    "Gulu",
+    "mbarara": "Mbarara",
+    "mbale":   "Mbale",
+    "lira":    "Lira",
+    "masaka":  "Masaka",
+}
+
+
+async def _fetch_ml_prices(category_key: str | None, district: str | None) -> dict | None:
+    """
+    Call ml-gateway-service for Prophet-based price forecasts.
+    Returns None if ML gateway is not configured, the category has no crop
+    mapping, or the request fails — triggering the DB fallback.
+    """
+    from services.produce.app.core.config import settings as _s
+    if not _s.ML_GATEWAY_URL:
+        return None
+
+    categories = [category_key] if category_key else list(_CATEGORY_TO_ML_CROP.keys())
+    market = "Kisenyi_Kampala"
+    if district:
+        district_lower = district.lower()
+        for key, val in _DISTRICT_TO_ML_MARKET.items():
+            if district_lower.startswith(key):
+                market = val
+                break
+
+    results = []
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for cat in categories:
+                crop = _CATEGORY_TO_ML_CROP.get(cat)
+                if not crop:
+                    continue
+                resp = await client.post(
+                    f"{_s.ML_GATEWAY_URL}/price/predict",
+                    json={"market": market, "crop": crop, "weeks_ahead": 1},
+                )
+                if resp.status_code == 200:
+                    predictions = resp.json().get("predictions", [])
+                    if predictions:
+                        results.append({
+                            "category": cat,
+                            "avg_price_per_kg": float(predictions[0].get("predicted_price_ugx", 0)),
+                            "listing_count": None,
+                            "source": "ml_forecast",
+                        })
+    except Exception:
+        return None
+
+    return {"results": results} if results else None
+
+
+# ── GET /produce/prices/predictions — price cards for frontend ────────
 @router.get("/prices/predictions", tags=["Produce"])
-def get_price_predictions(
+async def get_price_predictions(
     category: ProduceCategory | None = Query(default=None),
     district: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """
-    Returns average price per category (and optionally district) derived
-    from active listings. The frontend uses this for price prediction cards.
-    Results are cached in Redis for 10 minutes per category/district combo.
+    Returns price-per-kg estimates per category, preferring ML Gateway
+    Prophet forecasts when available, falling back to averages from active
+    listings. Results are cached in Redis for 10 minutes.
     """
-    # Normalise category to a plain string so cache keys and JSON serialisation
-    # are consistent regardless of Python version or SQLAlchemy enum behaviour.
     category_key: str | None = category.value if category is not None else None
 
     cached = get_cached_predictions(category_key, district)
     if cached:
         return cached
 
+    # Primary: ML Gateway Prophet forecast
+    ml_data = await _fetch_ml_prices(category_key, district)
+    if ml_data is not None:
+        set_cached_predictions(category_key, district, ml_data)
+        return ml_data
+
+    # Fallback: average from active listings in DB
     query = db.query(ProduceListing).filter(ProduceListing.is_available)
     if category:
         query = query.filter(ProduceListing.category == category)

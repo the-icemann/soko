@@ -15,6 +15,7 @@ from app.models.order import Order, OrderItem, OrderStatus
 from app.schemas.order import (
     CheckoutPayload, OrderOut, OrderSummaryOut, UpdateOrderStatusPayload
 )
+from app import kafka_publisher
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Orders"])
@@ -224,6 +225,22 @@ async def checkout(
     # ── 6. Notify buyer
     await notify_order_event(order, "order_placed")
 
+    # ── 7. Publish transaction events to ML Kafka (fire-and-forget)
+    for entry in enriched:
+        item    = entry["item"]
+        product = entry["product"]
+        kafka_publisher.publish_transaction(
+            event_type="purchase_completed",
+            order_id=str(order.id),
+            buyer_id=str(order.buyer_id),
+            farmer_id=str(product.get("farmerId", "")),
+            crop=str(product.get("category", "unknown")),
+            market=order.delivery_district or "Kisenyi_Kampala",
+            quantity_kg=float(item.quantity),
+            price_per_kg_ugx=float(item.unitPrice),
+            total_ugx=float(item.subtotal),
+        )
+
     result = build_order_out(order)
     # Attach payment_url if returned — frontend redirects to PesaPal
     result_dict = result.model_dump()
@@ -294,6 +311,20 @@ async def cancel_order(
         await restore_stock(str(item.product_id), item.quantity)
 
     await notify_order_event(order, "order_cancelled")
+
+    for item in order.items:
+        kafka_publisher.publish_transaction(
+            event_type="purchase_cancelled",
+            order_id=str(order.id),
+            buyer_id=str(order.buyer_id),
+            farmer_id=str(item.farmer_id),
+            crop=str(item.category),
+            market=order.delivery_district or "Kisenyi_Kampala",
+            quantity_kg=float(item.quantity),
+            price_per_kg_ugx=float(item.unit_price),
+            total_ugx=float(item.subtotal),
+        )
+
     return build_order_out(order)
 
 
