@@ -45,6 +45,7 @@ services:
       - recommendation_service
     networks:
       - soko_net
+      - soko-ml-bridge
     restart: on-failure
 
   # ─────────────────────────────────────────
