@@ -1,3 +1,5 @@
+from sqlite3 import IntegrityError
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -9,9 +11,10 @@ import uuid
 router = APIRouter(tags=["Internal"], dependencies=[Depends(internal_only)])
 
 
+
 @router.post("/", status_code=201)
 def create_user(payload: CreateUserPayload, db: Session = Depends(get_db)):
-    """ Auth Service calls this after creating credentials. """
+    """Auth Service calls this after creating credentials."""
     profile = UserProfile(
         id=uuid.UUID(payload.id),
         email=payload.email,
@@ -24,14 +27,22 @@ def create_user(payload: CreateUserPayload, db: Session = Depends(get_db)):
         interests=",".join(payload.interests)     if payload.interests    else None,
     )
     db.add(profile)
-
     if payload.role in ("farmer", "both"): db.add(FarmerStats(user_id=profile.id))
     if payload.role in ("buyer",  "both"): db.add(BuyerStats(user_id=profile.id))
     db.add(UserSettings(user_id=profile.id))
 
-    db.commit()
-    db.refresh(profile)
-    return {"id": str(profile.id)}
+    try:
+        db.commit()
+        db.refresh(profile)
+        return {"id": str(profile.id)}
+    except IntegrityError as e:
+        db.rollback()
+        detail = str(e.orig)
+        if "phone" in detail:
+            raise HTTPException(status_code=409, detail="Phone number already registered")
+        if "email" in detail:
+            raise HTTPException(status_code=409, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="User already exists")
 
 
 @router.put("/{user_id}/stats/farmer")
