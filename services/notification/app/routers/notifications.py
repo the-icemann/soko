@@ -1,10 +1,12 @@
 import uuid
 from fastapi import (
-    APIRouter, Depends, HTTPException,
-    Query, WebSocket, WebSocketDisconnect
+    APIRouter, Depends, Query,
+    WebSocket, WebSocketDisconnect
 )
+from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import get_current_user_id
 from app.db.database import get_db
 from app.helpers.push import register_connection, remove_connection
@@ -30,10 +32,10 @@ def build_out(n: Notification) -> NotificationOut:
 
 @router.get("/me", response_model=list[NotificationOut])
 def get_notifications(
-    unread_only: bool = Query(default=False),
-    page:        int  = Query(default=1,  ge=1),
-    limit:       int  = Query(default=20, le=100),
-    user_id:     str  = Depends(get_current_user_id),
+    unread_only: bool    = Query(default=False),
+    page:        int     = Query(default=1,  ge=1),
+    limit:       int     = Query(default=20, le=100),
+    user_id:     str     = Depends(get_current_user_id),
     db:          Session = Depends(get_db)
 ):
     q = db.query(Notification).filter(
@@ -42,7 +44,6 @@ def get_notifications(
     )
     if unread_only:
         q = q.filter(Notification.is_read == False)
-
     items = q.order_by(Notification.created_at.desc()) \
               .offset((page - 1) * limit).limit(limit).all()
     return [build_out(n) for n in items]
@@ -89,7 +90,25 @@ def mark_all_read(
 
 
 @router.websocket("/ws/{user_id}")
-async def ws_notifications(websocket: WebSocket, user_id: str):
+async def ws_notifications(
+    websocket: WebSocket,
+    user_id:   str,
+    token:     str = Query(...),
+):
+    # Validate token before accepting the connection
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        if payload.get("sub") != user_id or payload.get("type") != "access":
+            await websocket.close(code=4001)
+            return
+    except JWTError:
+        await websocket.close(code=4001)
+        return
+
     await websocket.accept()
     register_connection(user_id, websocket)
     try:

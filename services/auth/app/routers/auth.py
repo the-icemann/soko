@@ -63,13 +63,19 @@ async def register(payload: RegisterPayload, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(cred)
 
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.error(f"User Service call failed during register: {e}")
+    except httpx.HTTPStatusError as e:
         db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Could not create user profile. Please try again."
-        )
+        try:
+            detail = e.response.json().get("detail", "Could not create user profile")
+        except Exception:
+            detail = "Could not create user profile"
+        status_code = 409 if e.response.status_code == 409 else 503
+        raise HTTPException(status_code=status_code, detail=detail)
+    except httpx.RequestError as e:
+        logger.error(f"User service unreachable: {e}")
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Could not reach user service")
+
 
     # ── 4. Issue tokens
     access_token  = create_access_token(str(cred.id), cred.role.value, cred.email)
@@ -181,3 +187,19 @@ def logout():
 @router.get("/health")
 def health():
     return {"status": "ok", "service": "auth"}
+
+@router.get("/verify-token-optional")
+def verify_token_optional(
+    response: Response,
+    authorization: str = Header(default=None)
+):
+    """Like verify-token but returns 200 even without a token.
+    Used by nginx for routes that are public for GET but protected for writes."""
+    if authorization:
+        token = authorization.replace("Bearer ", "")
+        data = decode_token(token, token_type="access")
+        if data:
+            response.headers["x-user-id"]    = data["sub"]
+            response.headers["x-user-role"]  = data["role"]
+            response.headers["x-user-email"] = data["email"]
+    return {"valid": True}

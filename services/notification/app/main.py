@@ -17,7 +17,7 @@ app = FastAPI(
     root_path="/notifications"
 )
 
-app.include_router(internal.router,      prefix="/internal")
+app.include_router(internal.router,prefix="/internal")
 app.include_router(notifications.router)
 
 
