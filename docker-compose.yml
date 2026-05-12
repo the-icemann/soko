@@ -1,6 +1,8 @@
 networks:
   soko_net:
     driver: bridge
+  soko-ml-bridge:
+    external: true
 
 volumes:
   auth_db_data:
