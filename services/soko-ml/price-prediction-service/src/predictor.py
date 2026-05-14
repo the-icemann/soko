@@ -124,9 +124,60 @@ class ModelRegistry:
         return results
 
 
-def train_all_models() -> None:
-    """Train one Prophet model per market–crop pair and save as .pkl.
+async def train_all_models_from_feature_store() -> None:
+    """
+    Train one Prophet model per market–crop pair using soko_ml_db as the data source.
+    Falls back to synthetic seed data for pairs with insufficient real observations.
+    Replaces the CSV-based train_all_models() — call this from the retrain handler.
+    """
+    try:
+        from prophet import Prophet
+    except ImportError:
+        log.error("prophet_not_installed")
+        return
 
+    from .feature_store_client import fetch_training_data
+
+    model_dir = Path(os.getenv("MODEL_DIR", "models"))
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    for market in SUPPORTED_MARKETS:
+        for crop in SUPPORTED_CROPS:
+            key      = f"{market}__{crop}"
+            pkl_path = model_dir / f"{key}.pkl"
+
+            df, source = await fetch_training_data(market, crop)
+
+            if source == "farmgain_seed" or df.empty:
+                df = _generate_pair_data(market, crop).rename(
+                    columns={"date": "ds", "price_ugx": "y"}
+                )[["ds", "y"]]
+
+            df["ds"] = pd.to_datetime(df["ds"])
+            df = df.dropna()
+            if len(df) < 10:
+                log.warning("insufficient_data_skip", key=key, rows=len(df))
+                continue
+
+            m = Prophet(
+                yearly_seasonality=True,
+                weekly_seasonality=False,
+                daily_seasonality=False,
+                seasonality_mode="multiplicative",
+                interval_width=0.80,
+            )
+            m.add_seasonality(name="uganda_bimodal", period=26, fourier_order=5)
+            m.fit(df)
+
+            with open(pkl_path, "wb") as f:
+                pickle.dump(m, f)
+            log.info("model_trained", key=key, rows=len(df), source=source, path=str(pkl_path))
+
+
+def train_all_models() -> None:
+    """
+    Legacy CSV-based trainer — retained for cold-start bootstrap only.
+    In normal operation, use train_all_models_from_feature_store().
     Reads crop_prices_raw.csv if available; otherwise generates inline data.
     """
     try:
@@ -138,14 +189,13 @@ def train_all_models() -> None:
     model_dir = Path(os.getenv("MODEL_DIR", "models"))
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # DATA_DIR can be set to an absolute path; default looks sibling to this service
-    data_dir = Path(os.getenv("DATA_DIR", "../recommendation-service/data/raw"))
+    data_dir  = Path(os.getenv("DATA_DIR", "../recommendation-service/data/raw"))
     data_path = data_dir / "crop_prices_raw.csv"
-    df_all = pd.read_csv(data_path) if data_path.exists() else _generate_training_data()
+    df_all    = pd.read_csv(data_path) if data_path.exists() else _generate_training_data()
 
     for market in SUPPORTED_MARKETS:
         for crop in SUPPORTED_CROPS:
-            key = f"{market}__{crop}"
+            key      = f"{market}__{crop}"
             pkl_path = model_dir / f"{key}.pkl"
             if pkl_path.exists():
                 log.info("model_exists_skipping", key=key)
@@ -166,7 +216,6 @@ def train_all_models() -> None:
                 seasonality_mode="multiplicative",
                 interval_width=0.80,
             )
-            # Uganda bimodal seasonality — 26-week (half-year) cycle
             m.add_seasonality(name="uganda_bimodal", period=26, fourier_order=5)
             m.fit(df)
 

@@ -41,6 +41,7 @@ def publish_transaction(
     quantity_kg: float,
     price_per_kg_ugx: float,
     total_ugx: float,
+    product_name: str = "",
 ) -> None:
     """Fire-and-forget publish to soko.transactions. Silently skips if broker unreachable."""
     producer = _get_producer()
@@ -53,6 +54,7 @@ def publish_transaction(
         "buyer_id": buyer_id,
         "farmer_id": farmer_id,
         "crop": crop,
+        "product_name": product_name,
         "market": market,
         "quantity_kg": quantity_kg,
         "price_per_kg_ugx": price_per_kg_ugx,

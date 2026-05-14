@@ -8,6 +8,7 @@ volumes:
   redis-data:
   kafka-data:
   zookeeper-data:
+  soko_ml_db_data:
 
 services:
   # ── Infrastructure ────────────────────────────────────────────────────────────
@@ -82,8 +83,47 @@ services:
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.price.results   --partitions 3 --replication-factor 1 --config retention.ms=86400000
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.ml.events       --partitions 2 --replication-factor 1 --config retention.ms=1209600000
       kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.dlq             --partitions 2 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic soko.gaps            --partitions 2 --replication-factor 1 --config retention.ms=2592000000
       echo 'All Kafka topics created.'
       "
+    restart: on-failure
+
+  # ── ML Feature Store (Postgres) ───────────────────────────────────────────────
+
+  soko-ml-db:
+    image: postgres:16-alpine
+    container_name: soko-ml-db
+    hostname: soko-ml-db
+    networks:
+      - soko-ml-network
+    environment:
+      POSTGRES_DB:       soko_ml_db
+      POSTGRES_USER:     ${POSTGRES_USER:-soko_ml}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - soko_ml_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-soko_ml} -d soko_ml_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  db-init:
+    image: postgres:16-alpine
+    container_name: soko-ml-db-init
+    networks:
+      - soko-ml-network
+    depends_on:
+      soko-ml-db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    command: >
+      sh -c "psql -h soko-ml-db -U ${POSTGRES_USER:-soko_ml} -d soko_ml_db -f /schema/schema.sql && echo 'Schema applied.'"
+    volumes:
+      - ./db/schema.sql:/schema/schema.sql:ro
     restart: on-failure
 
   redis:
@@ -197,6 +237,8 @@ services:
     environment:
       - PRICE_SERVICE_URL=http://price-prediction-service:8001
       - REC_SERVICE_URL=http://recommendation-service:8002
+      - LOCATION_SERVICE_URL=http://location-service:8003
+      - INGEST_SERVICE_URL=http://data-ingestion-service:8004
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SERVICE_NAME=ml-gateway-service
     depends_on:
@@ -204,11 +246,93 @@ services:
         condition: service_healthy
       recommendation-service:
         condition: service_healthy
+      location-service:
+        condition: service_healthy
+      data-ingestion-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  data-ingestion-service:
+    build:
+      context: ./data-ingestion-service
+      dockerfile: Dockerfile
+    container_name: soko-ml-ingest
+    hostname: data-ingestion-service
+    networks:
+      soko-ml-network: {}
+      soko-ml-bridge:
+        aliases:
+          - data-ingestion-service
+    ports:
+      - "${INGEST_SERVICE_PORT:-8096}:8004"
+    environment:
+      - POSTGRES_DSN=postgresql://${POSTGRES_USER:-soko_ml}:${POSTGRES_PASSWORD:-changeme}@soko-ml-db:5432/soko_ml_db
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      - KAFKA_TRANSACTION_TOPIC=${KAFKA_TRANSACTION_TOPIC:-soko.transactions}
+      - KAFKA_ML_EVENTS_TOPIC=${KAFKA_ML_EVENTS_TOPIC:-soko.ml.events}
+      - KAFKA_GAPS_TOPIC=${KAFKA_GAPS_TOPIC:-soko.gaps}
+      - USER_SERVICE_URL=${USER_SERVICE_URL:-http://user-service:8002}
+      - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order-service:8003}
+      - PRODUCE_SERVICE_URL=${PRODUCE_SERVICE_URL:-http://produce-service:8004}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-internal-secret}
+      - BOOTSTRAP_ON_STARTUP=${BOOTSTRAP_ON_STARTUP:-true}
+      - MIN_OBSERVATIONS_FOR_MODEL=${MIN_OBSERVATIONS_FOR_MODEL:-30}
+      - PRICE_ANOMALY_SIGMA_THRESHOLD=${PRICE_ANOMALY_SIGMA_THRESHOLD:-3.0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=data-ingestion-service
+    depends_on:
+      soko-ml-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  location-service:
+    build:
+      context: ./location-service
+      dockerfile: Dockerfile
+    container_name: soko-ml-location
+    hostname: location-service
+    networks:
+      - soko-ml-network
+    ports:
+      - "${LOCATION_SERVICE_PORT:-8097}:8003"
+    environment:
+      - POSTGRES_DSN=postgresql://${POSTGRES_USER:-soko_ml}:${POSTGRES_PASSWORD:-changeme}@soko-ml-db:5432/soko_ml_db
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - PRICE_SERVICE_URL=${PRICE_SERVICE_URL:-http://ml-gateway-service:8000}
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY:-}
+      - MAPS_DISTANCE_CACHE_TTL_SECONDS=${MAPS_DISTANCE_CACHE_TTL_SECONDS:-2592000}
+      - GEO_FILTER_RELAX_FACTOR=${GEO_FILTER_RELAX_FACTOR:-1.5}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      - KAFKA_GAPS_TOPIC=${KAFKA_GAPS_TOPIC:-soko.gaps}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SERVICE_NAME=location-service
+    depends_on:
+      soko-ml-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   kafka-agent:
@@ -229,6 +353,7 @@ services:
       - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-soko.dlq}
       - PRICE_SERVICE_URL=http://price-prediction-service:8001
       - REC_SERVICE_URL=http://recommendation-service:8002
+      - DATA_INGESTION_SERVICE_URL=http://data-ingestion-service:8004
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SERVICE_NAME=kafka-agent
     depends_on:
@@ -237,5 +362,7 @@ services:
       price-prediction-service:
         condition: service_healthy
       recommendation-service:
+        condition: service_healthy
+      data-ingestion-service:
         condition: service_healthy
     restart: unless-stopped

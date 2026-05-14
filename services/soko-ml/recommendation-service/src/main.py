@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -9,6 +10,7 @@ from .cache import (
     get_cached_farmers, set_cached_farmers,
     get_cached_buyers, set_cached_buyers,
 )
+from .feature_store_client import close_pool
 from .interaction_store import InteractionStore
 from .kafka_consumer import InteractionConsumer
 from .recommender import ProfileStore, Recommender
@@ -26,34 +28,53 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-FARMERS_PATH = os.getenv("FARMERS_DATA_PATH", "/app/data/raw/farmers.csv")
-BUYERS_PATH = os.getenv("BUYERS_DATA_PATH", "/app/data/raw/buyers.csv")
-DEFAULT_TOP_N = int(os.getenv("DEFAULT_TOP_N", "5"))
-SERVICE_NAME = os.getenv("SERVICE_NAME", "recommendation-service")
+DEFAULT_TOP_N              = int(os.getenv("DEFAULT_TOP_N", "5"))
+SERVICE_NAME               = os.getenv("SERVICE_NAME", "recommendation-service")
+PROFILE_REFRESH_INTERVAL   = int(os.getenv("PROFILE_REFRESH_INTERVAL_SECONDS", "900"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    profile_store = ProfileStore(FARMERS_PATH, BUYERS_PATH)
-    n_farmers, n_buyers = profile_store.load()
+    profile_store = ProfileStore()
+
+    # Initial load — exit if Postgres is unreachable (service cannot function without profiles)
+    try:
+        n_farmers, n_buyers = await profile_store.reload()
+    except Exception as exc:
+        log.critical(f"Cannot load profiles from feature store at startup: {exc}")
+        raise SystemExit(1)
 
     interaction_store = InteractionStore()
-    redis_client = await get_redis_client()
-    recommender = Recommender(profile_store, interaction_store)
+    redis_client      = await get_redis_client()
+    recommender       = Recommender(profile_store, interaction_store)
 
     consumer = InteractionConsumer(interaction_store)
     consumer.start()
 
-    app.state.recommender = recommender
-    app.state.redis = redis_client
+    app.state.recommender   = recommender
+    app.state.redis         = redis_client
     app.state.profile_store = profile_store
-    app.state.consumer = consumer
+    app.state.consumer      = consumer
 
     log.info("recommendation_service_started", farmers=n_farmers, buyers=n_buyers)
+
+    # Periodic reload task
+    async def _reload_loop():
+        while True:
+            await asyncio.sleep(PROFILE_REFRESH_INTERVAL)
+            try:
+                await profile_store.reload()
+            except Exception as exc:
+                log.warning(f"Periodic profile reload failed: {exc}")
+
+    reload_task = asyncio.create_task(_reload_loop())
+
     yield
 
+    reload_task.cancel()
     consumer.stop()
     await redis_client.aclose()
+    await close_pool()
     log.info("recommendation_service_stopped")
 
 

@@ -26,6 +26,8 @@ REC_VENV     := $(ML_DIR)/recommendation-service/.venv
 GATEWAY_VENV := $(ML_DIR)/ml-gateway-service/.venv
 AGENT_VENV   := $(ML_DIR)/kafka-agent/.venv
 DATA_VENV    := $(ML_DIR)/data-generator/.venv
+INGEST_VENV  := $(ML_DIR)/data-ingestion-service/.venv
+LOC_VENV     := $(ML_DIR)/location-service/.venv
 
 # ── Core services that need .env files ───────────────────────────────────────
 CORE_SERVICES := auth user produce order payment message notification blog ussd
@@ -34,12 +36,14 @@ CORE_SERVICES := auth user produce order payment message notification blog ussd
         bridge-network \
         ml-up ml-down ml-logs \
         core-up core-down core-logs core-restart \
-        install generate-data train \
-        dev dev-price dev-rec dev-gateway \
+        install generate-data train cold-start \
+        dev dev-price dev-rec dev-gateway dev-location dev-ingest \
+        db-up db-shell db-reset \
         infra-up infra-down kafka-topics kafka-ui redis-cli \
-        logs logs-price logs-rec logs-gateway logs-agent \
-        test test-price test-rec test-gateway \
-        health smoke-test \
+        ingest-bootstrap ingest-status gaps-summary gaps-reset \
+        logs logs-price logs-rec logs-gateway logs-agent logs-location logs-ingest \
+        test test-price test-rec test-gateway test-location test-ingest \
+        health smoke-test smoke-route smoke-discover smoke-fallback smoke-tier3 smoke-ingest \
         clean clean-models clean-docker \
         help
 
@@ -74,11 +78,27 @@ help:
 	@echo "► ML STACK"
 	@echo "  ─────────────────────────────────────────────────────────"
 	@echo "  make ml-up          Build and start the ML stack"
-	@echo "     ↳ ML gateway     → http://localhost:8080"
-	@echo "     ↳ Price service  → http://localhost:8094/docs"
-	@echo "     ↳ Rec service    → http://localhost:8095/docs"
+	@echo "     ↳ ML gateway       → http://localhost:8080"
+	@echo "     ↳ Price service    → http://localhost:8094/docs"
+	@echo "     ↳ Rec service      → http://localhost:8095/docs"
+	@echo "     ↳ Location service → http://localhost:8003/docs"
+	@echo "     ↳ Ingest service   → http://localhost:8096/docs"
 	@echo "  make ml-down        Stop and remove ML containers + volumes"
 	@echo "  make ml-logs        Tail logs for all ML containers"
+	@echo "  make cold-start     First-time: bring up infra, bootstrap DB, then full ML stack"
+	@echo ""
+	@echo "► ML — DATABASE (Feature Store)"
+	@echo "  ─────────────────────────────────────────────────────────"
+	@echo "  make db-up          Start only the ML Postgres (soko-ml-db) + run schema"
+	@echo "  make db-shell       Open psql shell into soko_ml_db"
+	@echo "  make db-reset       Drop and re-create schema (destructive!)"
+	@echo ""
+	@echo "► ML — DATA INGESTION"
+	@echo "  ─────────────────────────────────────────────────────────"
+	@echo "  make ingest-bootstrap   Trigger initial data sync from backend services"
+	@echo "  make ingest-status      Show bootstrap progress"
+	@echo "  make gaps-summary       Show crop/market coverage gap report"
+	@echo "  make gaps-reset         Reset all gap counters (dev only)"
 	@echo ""
 	@echo "► CORE STACK"
 	@echo "  ─────────────────────────────────────────────────────────"
@@ -90,13 +110,15 @@ help:
 	@echo ""
 	@echo "► ML — LOCAL DEVELOPMENT"
 	@echo "  ─────────────────────────────────────────────────────────"
-	@echo "  make install        Create Python venvs and install ML dependencies"
+	@echo "  make install        Create Python venvs and install all ML dependencies"
 	@echo "  make generate-data  Generate synthetic training data (farmers/buyers/prices)"
 	@echo "  make train          Train price-prediction models locally"
 	@echo "  make dev            Run ML stack with hot-reload (docker compose dev override)"
 	@echo "  make dev-price      Run price service locally with uvicorn on :8094"
 	@echo "  make dev-rec        Run recommendation service locally with uvicorn on :8095"
 	@echo "  make dev-gateway    Run ML gateway locally with uvicorn on :8080"
+	@echo "  make dev-location   Run location service locally with uvicorn on :8003"
+	@echo "  make dev-ingest     Run data-ingestion service locally with uvicorn on :8096"
 	@echo ""
 	@echo "► ML — INFRASTRUCTURE"
 	@echo "  ─────────────────────────────────────────────────────────"
@@ -113,6 +135,8 @@ help:
 	@echo "  make logs-rec       Tail recommendation-service logs"
 	@echo "  make logs-gateway   Tail ml-gateway-service logs"
 	@echo "  make logs-agent     Tail kafka-agent logs"
+	@echo "  make logs-location  Tail location-service logs"
+	@echo "  make logs-ingest    Tail data-ingestion-service logs"
 	@echo ""
 	@echo "► TESTING"
 	@echo "  ─────────────────────────────────────────────────────────"
@@ -120,11 +144,18 @@ help:
 	@echo "  make test-price     Run price-prediction-service tests only"
 	@echo "  make test-rec       Run recommendation-service tests only"
 	@echo "  make test-gateway   Run ml-gateway-service tests only"
+	@echo "  make test-location  Run location-service tests only"
+	@echo "  make test-ingest    Run data-ingestion-service tests only"
 	@echo ""
 	@echo "► HEALTH & SMOKE"
 	@echo "  ─────────────────────────────────────────────────────────"
-	@echo "  make health         Hit /health on API gateway + all ML services"
-	@echo "  make smoke-test     End-to-end: price prediction + recommendation calls"
+	@echo "  make health           Hit /health on API gateway + all ML services"
+	@echo "  make smoke-test       Price prediction + recommendation calls"
+	@echo "  make smoke-route      Location /route with a sample farmer payload"
+	@echo "  make smoke-discover   Location /discover buyer→farmers query"
+	@echo "  make smoke-fallback   Location /route Tier 2 fallback (rare crop)"
+	@echo "  make smoke-tier3      Location /route Tier 3 unknown crop"
+	@echo "  make smoke-ingest     POST a synthetic order event to /ingest/order-event"
 	@echo ""
 	@echo "► CLEAN"
 	@echo "  ─────────────────────────────────────────────────────────"
@@ -266,22 +297,16 @@ core-logs:
 # =============================================================================
 
 install:
-	python3.12 -m venv $(PRICE_VENV)   && $(PRICE_VENV)/bin/pip install -q -r $(ML_DIR)/price-prediction-service/requirements.txt
-	python3.12 -m venv $(REC_VENV)     && $(REC_VENV)/bin/pip install -q -r $(ML_DIR)/recommendation-service/requirements.txt
-	python3.12 -m venv $(GATEWAY_VENV) && $(GATEWAY_VENV)/bin/pip install -q -r $(ML_DIR)/ml-gateway-service/requirements.txt
-	python3.12 -m venv $(AGENT_VENV)   && $(AGENT_VENV)/bin/pip install -q -r $(ML_DIR)/kafka-agent/requirements.txt
-	python3.12 -m venv $(DATA_VENV)    && $(DATA_VENV)/bin/pip install -q -r $(ML_DIR)/data-generator/requirements.txt
+	python3.12 -m venv $(PRICE_VENV)   && $(PRICE_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/price-prediction-service/requirements.txt
+	python3.12 -m venv $(REC_VENV)     && $(REC_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/recommendation-service/requirements.txt
+	python3.12 -m venv $(GATEWAY_VENV) && $(GATEWAY_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/ml-gateway-service/requirements.txt
+	python3.12 -m venv $(AGENT_VENV)   && $(AGENT_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/kafka-agent/requirements.txt
+	python3.12 -m venv $(DATA_VENV)    && $(DATA_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/data-generator/requirements.txt
+	python3.12 -m venv $(INGEST_VENV)  && $(INGEST_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/data-ingestion-service/requirements.txt
+	python3.12 -m venv $(LOC_VENV)     && $(LOC_VENV)/bin/pip install -q --timeout 120 -r $(ML_DIR)/location-service/requirements.txt
 	@echo "All ML dependencies installed."
 	@echo "Installing CmdStan 2.33.1 into Prophet's internal path (one-time, ~400 MB)..."
-	$(PRICE_VENV)/bin/python -c " \
-	  import prophet, pathlib, cmdstanpy; \
-	  d = pathlib.Path(prophet.__file__).parent / 'stan_model'; \
-	  target = d / 'cmdstan-2.33.1'; \
-	  d.mkdir(parents=True, exist_ok=True); \
-	  (print('CmdStan 2.33.1 already present, skipping.') if (target / 'Makefile').exists() \
-	   else (print('Downloading + compiling CmdStan 2.33.1...'), \
-	         cmdstanpy.install_cmdstan(dir=str(d), version='2.33.1'), \
-	         print('CmdStan 2.33.1 installed.')))"
+	$(PRICE_VENV)/bin/python $(ML_DIR)/install_cmdstan.py
 
 generate-data:
 	@mkdir -p $(ML_DIR)/recommendation-service/data/raw
@@ -319,17 +344,81 @@ dev-gateway:
 	cd $(ML_DIR)/ml-gateway-service && \
 	  $(abspath $(GATEWAY_VENV))/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
 
+dev-location:
+	cd $(ML_DIR)/location-service && \
+	  $(abspath $(LOC_VENV))/bin/uvicorn src.main:app --host 0.0.0.0 --port 8003 --reload
+
+dev-ingest:
+	cd $(ML_DIR)/data-ingestion-service && \
+	  $(abspath $(INGEST_VENV))/bin/uvicorn src.main:app --host 0.0.0.0 --port 8096 --reload
+
+# =============================================================================
+# ML — DATABASE (Feature Store)
+# =============================================================================
+
+db-up:
+	$(COMPOSE_ML) up -d soko-ml-db db-init
+	@echo "Waiting for schema init to complete..."
+	@sleep 5
+	@$(COMPOSE_ML) logs db-init
+
+db-shell:
+	$(COMPOSE_ML) exec soko-ml-db psql -U $${POSTGRES_USER:-soko_ml} -d soko_ml_db
+
+db-reset:
+	@echo "WARNING: This will drop and re-apply the schema. Press Ctrl-C to abort (5s)..."
+	@sleep 5
+	$(COMPOSE_ML) exec -T soko-ml-db psql -U $${POSTGRES_USER:-soko_ml} -d soko_ml_db \
+	  -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	$(COMPOSE_ML) exec -T soko-ml-db psql -U $${POSTGRES_USER:-soko_ml} -d soko_ml_db \
+	  -f /schema/schema.sql
+	@echo "Schema reset complete."
+
+# =============================================================================
+# ML — DATA INGESTION
+# =============================================================================
+
+ingest-bootstrap:
+	@curl -sf -X POST http://localhost:8096/bootstrap | python3 -m json.tool || \
+	  curl -sf -X POST http://localhost:8080/ingest/bootstrap | python3 -m json.tool
+
+ingest-status:
+	@curl -sf http://localhost:8096/bootstrap/status | python3 -m json.tool || \
+	  curl -sf http://localhost:8080/ingest/status | python3 -m json.tool
+
+gaps-summary:
+	@curl -sf http://localhost:8096/gaps/summary | python3 -m json.tool || \
+	  curl -sf http://localhost:8080/gaps/summary | python3 -m json.tool
+
+gaps-reset:
+	@$(COMPOSE_ML) exec -T soko-ml-db psql -U $${POSTGRES_USER:-soko_ml} -d soko_ml_db \
+	  -c "TRUNCATE coverage_gaps;"
+	@echo "Gap counters reset."
+
+cold-start: bridge-network db-up
+	@echo "Waiting for DB to be fully ready..."
+	@sleep 10
+	$(COMPOSE_ML) up --build -d
+	@echo "Stack up — triggering bootstrap..."
+	@sleep 20
+	@$(MAKE) ingest-bootstrap
+	@echo ""
+	@echo "Cold start complete:"
+	@echo "  ML gateway  → http://localhost:8080"
+	@echo "  Ingest      → http://localhost:8096/docs"
+	@echo "  Location    → http://localhost:8003/docs"
+
 # =============================================================================
 # ML — INFRASTRUCTURE HELPERS
 # =============================================================================
 
 infra-up:
-	$(COMPOSE_ML) up -d zookeeper kafka kafka-init redis
+	$(COMPOSE_ML) up -d zookeeper kafka kafka-init redis soko-ml-db db-init
 	@echo "ML infrastructure starting (Kafka may take ~30s to be ready)."
 
 infra-down:
-	$(COMPOSE_ML) stop zookeeper kafka kafka-init redis
-	$(COMPOSE_ML) rm -f zookeeper kafka kafka-init redis
+	$(COMPOSE_ML) stop zookeeper kafka kafka-init redis soko-ml-db db-init
+	$(COMPOSE_ML) rm -f zookeeper kafka kafka-init redis soko-ml-db db-init
 
 kafka-topics:
 	$(COMPOSE_ML) exec kafka kafka-topics --bootstrap-server localhost:9092 \
@@ -344,6 +433,8 @@ kafka-topics:
 	  --create --if-not-exists --topic soko.ml.events      --partitions 2 --replication-factor 1
 	$(COMPOSE_ML) exec kafka kafka-topics --bootstrap-server localhost:9092 \
 	  --create --if-not-exists --topic soko.dlq            --partitions 2 --replication-factor 1
+	$(COMPOSE_ML) exec kafka kafka-topics --bootstrap-server localhost:9092 \
+	  --create --if-not-exists --topic soko.gaps           --partitions 2 --replication-factor 1
 	@echo "All Kafka topics created."
 
 kafka-ui:
@@ -371,11 +462,17 @@ logs-gateway:
 logs-agent:
 	$(COMPOSE_ML) logs -f kafka-agent
 
+logs-location:
+	$(COMPOSE_ML) logs -f location-service
+
+logs-ingest:
+	$(COMPOSE_ML) logs -f data-ingestion-service
+
 # =============================================================================
 # TESTING
 # =============================================================================
 
-test: test-price test-rec test-gateway
+test: test-price test-rec test-gateway test-location test-ingest
 
 test-price:
 	$(PRICE_VENV)/bin/pytest $(ML_DIR)/price-prediction-service/tests/ -v
@@ -385,6 +482,12 @@ test-rec:
 
 test-gateway:
 	$(GATEWAY_VENV)/bin/pytest $(ML_DIR)/ml-gateway-service/tests/ -v
+
+test-location:
+	$(LOC_VENV)/bin/pytest $(ML_DIR)/location-service/tests/ -v
+
+test-ingest:
+	$(INGEST_VENV)/bin/pytest $(ML_DIR)/data-ingestion-service/tests/ -v
 
 # =============================================================================
 # HEALTH & SMOKE
@@ -399,6 +502,10 @@ health:
 	  curl -sf http://localhost:8094/health | python3 -m json.tool || echo "UNREACHABLE"
 	@echo "=== Recommendation Service ===" && \
 	  curl -sf http://localhost:8095/health | python3 -m json.tool || echo "UNREACHABLE"
+	@echo "=== Location Service ===" && \
+	  curl -sf http://localhost:8003/health | python3 -m json.tool || echo "UNREACHABLE"
+	@echo "=== Data Ingestion Service ===" && \
+	  curl -sf http://localhost:8096/health | python3 -m json.tool || echo "UNREACHABLE"
 
 smoke-test:
 	@echo "=== Smoke: Price Prediction ==="
@@ -411,6 +518,41 @@ smoke-test:
 	@echo "=== Smoke: Buyers for Farmer ==="
 	@curl -sf "http://localhost:8080/recommend/buyers-for-farmer/F0001?top_n=3" | python3 -m json.tool
 
+smoke-route:
+	@echo "=== Smoke: Market Route (farmer sell signal) ==="
+	@curl -sf -X POST http://localhost:8080/location/route \
+	  -H 'Content-Type: application/json' \
+	  -d '{"farmer_id":"F0001","crop":"maize_grain","quantity_kg":500,"harvest_month":8}' \
+	  | python3 -m json.tool
+
+smoke-discover:
+	@echo "=== Smoke: Discover Farmers Near Buyer ==="
+	@curl -sf -X POST http://localhost:8080/location/discover \
+	  -H 'Content-Type: application/json' \
+	  -d '{"buyer_id":"B0001","crop":"maize_grain","max_distance_km":150,"max_price_ugx":2000,"top_n":5}' \
+	  | python3 -m json.tool
+
+smoke-fallback:
+	@echo "=== Smoke: Tier 2 fallback (sesame seed — limited coverage) ==="
+	@curl -sf -X POST http://localhost:8080/location/route \
+	  -H 'Content-Type: application/json' \
+	  -d '{"farmer_id":"F0001","crop":"sesame","quantity_kg":200,"harvest_month":10}' \
+	  | python3 -m json.tool
+
+smoke-tier3:
+	@echo "=== Smoke: Tier 3 unknown crop ==="
+	@curl -sf -X POST http://localhost:8080/location/route \
+	  -H 'Content-Type: application/json' \
+	  -d '{"farmer_id":"F0001","crop":"moringa","quantity_kg":50,"harvest_month":6}' \
+	  | python3 -m json.tool
+
+smoke-ingest:
+	@echo "=== Smoke: POST synthetic order event to ingest ==="
+	@curl -sf -X POST http://localhost:8096/ingest/order-event \
+	  -H 'Content-Type: application/json' \
+	  -d '{"event_type":"purchase_completed","order_id":"TEST-001","product_name":"Maize (Dry)","crop":"Grains","market":"Kampala","price_per_kg_ugx":1400,"quantity_kg":50,"total_ugx":70000,"farmer_id":"F0001","buyer_id":"B0001","timestamp":"2026-05-14T10:00:00Z"}' \
+	  | python3 -m json.tool
+
 # =============================================================================
 # CLEAN
 # =============================================================================
@@ -418,7 +560,7 @@ smoke-test:
 clean:
 	find $(ML_DIR) -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find $(ML_DIR) -name "*.pyc" -delete 2>/dev/null || true
-	rm -rf $(PRICE_VENV) $(REC_VENV) $(GATEWAY_VENV) $(AGENT_VENV) $(DATA_VENV)
+	rm -rf $(PRICE_VENV) $(REC_VENV) $(GATEWAY_VENV) $(AGENT_VENV) $(DATA_VENV) $(INGEST_VENV) $(LOC_VENV)
 	rm -f $(ML_DIR)/recommendation-service/data/raw/*.csv
 	@echo "Cleaned."
 

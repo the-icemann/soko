@@ -130,6 +130,7 @@ services:
         condition: service_healthy
     networks:
       - soko_net
+      - soko-ml-bridge
     restart: on-failure
 
   # ─────────────────────────────────────────
@@ -170,6 +171,7 @@ services:
         condition: service_healthy
     networks:
       - soko_net
+      - soko-ml-bridge
     restart: on-failure
 
   # ─────────────────────────────────────────
@@ -215,6 +217,7 @@ services:
         condition: service_started
     networks:
       - soko_net
+      - soko-ml-bridge
     restart: on-failure
 
   # ─────────────────────────────────────────

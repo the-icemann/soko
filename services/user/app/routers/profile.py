@@ -90,6 +90,29 @@ def get_farmers(
         for farmer in farmers
     ]
 
+@router.get("/buyers", response_model=list[AuthenticatedUser])
+def get_buyers(
+    district:  Optional[str]  = Query(default=None),
+    page:      int            = Query(default=1, ge=1),
+    limit:     int            = Query(default=100, le=500),
+    db: Session               = Depends(get_db)
+):
+    """
+    Returns all users with role buyer or both.
+    Used by data-ingestion-service bootstrap to populate buyer_features table.
+    """
+    from app.helpers.builders import build_authenticated_user
+    q = db.query(UserProfile).filter(
+        UserProfile.role.in_([UserRole.buyer, UserRole.both])
+    )
+    if district:
+        q = q.filter(UserProfile.district == district)
+
+    buyers = q.order_by(UserProfile.created_at.desc()) \
+               .offset((page - 1) * limit).limit(limit).all()
+    return [build_authenticated_user(b) for b in buyers]
+
+
 @router.get("/{user_id}", response_model=FarmerProfile)
 def get_farmer_profile(user_id: str, db: Session = Depends(get_db)):
     try:

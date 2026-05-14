@@ -9,8 +9,10 @@ import structlog
 
 log = structlog.get_logger()
 
-PRICE_SERVICE_URL = os.getenv("PRICE_SERVICE_URL", "http://price-prediction-service:8001")
-REC_SERVICE_URL = os.getenv("REC_SERVICE_URL", "http://recommendation-service:8002")
+PRICE_SERVICE_URL     = os.getenv("PRICE_SERVICE_URL",     "http://price-prediction-service:8001")
+REC_SERVICE_URL       = os.getenv("REC_SERVICE_URL",       "http://recommendation-service:8002")
+LOCATION_SERVICE_URL  = os.getenv("LOCATION_SERVICE_URL",  "http://location-service:8003")
+INGEST_SERVICE_URL    = os.getenv("INGEST_SERVICE_URL",    "http://data-ingestion-service:8004")
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 0.5
@@ -75,13 +77,19 @@ class CircuitBreaker:
 # One breaker per downstream service, keyed by service name
 _breakers: dict[str, CircuitBreaker] = {
     "price-prediction": CircuitBreaker("price-prediction"),
-    "recommendation": CircuitBreaker("recommendation"),
+    "recommendation":   CircuitBreaker("recommendation"),
+    "location":         CircuitBreaker("location"),
+    "ingestion":        CircuitBreaker("ingestion"),
 }
 
 
 def _get_breaker(url: str) -> CircuitBreaker:
     if PRICE_SERVICE_URL in url:
         return _breakers["price-prediction"]
+    if LOCATION_SERVICE_URL in url:
+        return _breakers["location"]
+    if INGEST_SERVICE_URL in url:
+        return _breakers["ingestion"]
     return _breakers["recommendation"]
 
 
@@ -134,17 +142,29 @@ async def proxy_request(
 def _fallback_response(url: str) -> dict:
     if "price" in url:
         return {
-            "error": "price-prediction-service unavailable",
-            "message": "Price prediction is temporarily unavailable. Please try again later.",
-            "cached": False,
+            "error":       "price-prediction-service unavailable",
+            "message":     "Price prediction is temporarily unavailable. Please try again later.",
+            "cached":      False,
             "predictions": [],
         }
+    if "location" in url or "route" in url or "discover" in url:
+        return {
+            "error":           "location-service unavailable",
+            "message":         "Market routing is temporarily unavailable. Please try again later.",
+            "tier":            0,
+            "ranked_markets":  [],
+        }
+    if "ingest" in url or "gaps" in url or "coverage" in url or "bootstrap" in url:
+        return {
+            "error":   "data-ingestion-service unavailable",
+            "message": "Data ingestion service is temporarily unavailable.",
+        }
     return {
-        "error": "recommendation-service unavailable",
-        "message": "Recommendations are temporarily unavailable. Please try again later.",
-        "cached": False,
+        "error":               "recommendation-service unavailable",
+        "message":             "Recommendations are temporarily unavailable. Please try again later.",
+        "cached":              False,
         "recommended_farmers": [],
-        "recommended_buyers": [],
+        "recommended_buyers":  [],
     }
 
 

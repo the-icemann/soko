@@ -12,6 +12,8 @@ import structlog
 from .consumers.interaction_consumer import InteractionConsumer
 from .consumers.transaction_consumer import TransactionConsumer
 from .consumers.price_request_consumer import PriceRequestConsumer
+from .consumers.coverage_gap_consumer import CoverageGapConsumer
+from .consumers.transaction_price_collector import TransactionPriceCollector
 from .dlq import DLQHandler
 from .producers.event_producer import EventProducer
 
@@ -34,6 +36,8 @@ class KafkaAgent:
             TransactionConsumer(self._producer, self._dlq),
             InteractionConsumer(self._dlq),
             PriceRequestConsumer(self._producer, self._dlq),
+            CoverageGapConsumer(),
+            TransactionPriceCollector(self._dlq),
         ]
         self._threads: list[threading.Thread] = []
         self._shutdown_event = threading.Event()
