@@ -1,11 +1,11 @@
 # Soko — Digital Agricultural Marketplace
 
-A production-grade microservices platform connecting Ugandan farmers and buyers. Farmers list produce, buyers place orders, and the system handles payments, messaging, notifications, and price intelligence — all through a single Nginx API gateway.
+A production-grade microservices platform connecting Ugandan farmers and buyers. Farmers list produce, buyers place orders, the system handles payments, messaging, and notifications — and a dedicated ML layer delivers personalised recommendations and market price forecasts to every authenticated user.
 
-The platform is split into two independent but integrated stacks:
+The platform runs as two independent but integrated Docker Compose stacks:
 
-- **Core stack** — transactional services (auth, users, produce, orders, payments, messaging, blog, USSD)
-- **ML stack** — price prediction and farmer/buyer matching (`services/soko-ml/`)
+- **Core stack** — transactional services: auth, users, produce, orders, payments, messaging, notifications, blog, USSD
+- **ML stack** — intelligence layer: price prediction, personalised recommendations, market routing, data ingestion, Kafka event backbone
 
 ---
 
@@ -14,73 +14,88 @@ The platform is split into two independent but integrated stacks:
 1. [Architecture Overview](#architecture-overview)
 2. [Core Services](#core-services)
 3. [ML Layer](#ml-layer)
-4. [How the Two Stacks Interact](#how-the-two-stacks-interact)
-5. [API Reference](#api-reference)
-6. [User Flows](#user-flows)
-7. [Event System](#event-system)
-8. [Getting the ML Stack Running](#getting-the-ml-stack-running)
-9. [Running Tests](#running-tests)
-10. [Environment Variables](#environment-variables)
-11. [Project Structure](#project-structure)
+4. [Auth → ML: The Authenticated Recommendation Flow](#auth--ml-the-authenticated-recommendation-flow)
+5. [How the Two Stacks Integrate](#how-the-two-stacks-integrate)
+6. [API Reference](#api-reference)
+7. [User Flows](#user-flows)
+8. [Event System (Kafka)](#event-system-kafka)
+9. [Getting Started](#getting-started)
+10. [Makefile Reference](#makefile-reference)
+11. [Environment Variables](#environment-variables)
+12. [Project Structure](#project-structure)
+13. [Production Bug Report](#production-bug-report)
+14. [Known Limitations](#known-limitations)
 
 ---
 
 ## Architecture Overview
 
 ```
- ┌────────────────────────────────────────────────────────────────┐
- │                      CLIENT LAYER                              │
- │          Web App · Mobile App · USSD Handsets                  │
- └───────────────────────────┬────────────────────────────────────┘
-                             │ HTTP / WebSocket
-                             ▼
- ┌────────────────────────────────────────────────────────────────┐
- │               NGINX API GATEWAY  :80                           │
- │   Rate limiting (30 req/min) · CORS · JWT subrequest auth      │
- │   Routes: /auth/ /users/ /listings/ /orders/ /payments/        │
- │           /message/ /notifications/ /posts/ /ussd/             │
- │           /recommendations/                                     │
- └──┬────┬────┬────┬────┬────┬────┬────┬────┬────────────────────┘
-    │    │    │    │    │    │    │    │    │
-    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼
-  Auth User Prod Ord  Pay  Msg  Notif Blog USSD  Rec
- :8001:8002:8003:8004:8005:8006:8007 :8008:8009 :8010
-    │    │    │    │    │    │    │    │    │     │
-    └────┴────┴────┴────┴────┴────┴────┴────┴─────┘
-                         │
-              ┌──────────┴──────────┐
-              │                     │
-              ▼                     ▼
-        PostgreSQL              RabbitMQ :5672
-     (one DB per service)     (async events between
-                               core services)
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │                          CLIENT LAYER                                │
+ │              Web App · Mobile App · USSD Handsets                    │
+ └───────────────────────────────┬──────────────────────────────────────┘
+                                 │ HTTP / WebSocket
+                                 ▼
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │                    NGINX API GATEWAY  :80                            │
+ │   Rate limiting (30 req/min) · CORS · JWT subrequest auth            │
+ │                                                                      │
+ │  /auth/ /oauth/           → auth_service        (public)             │
+ │  /users/                  → user_service        (JWT required)       │
+ │  /listings/               → produce_service     (JWT optional)       │
+ │  /orders/                 → order_service       (JWT required)       │
+ │  /payments/ /webhook/     → payment_service     (JWT / public)       │
+ │  /message/ /message/ws/   → message_service     (JWT / WS)           │
+ │  /notifications/ /ws/     → notification_service(JWT / WS)           │
+ │  /posts/                  → blog_service        (JWT optional)       │
+ │  /ussd/                   → ussd_service        (public)             │
+ │  /ml/price/               → ml-gateway          (public)             │
+ │  /ml/recommend/           → ml-gateway          (JWT required) ◄─┐   │
+ │  /recommendations/        → ml-gateway          (JWT required) ──┘   │
+ └──┬────┬────┬────┬────┬────┬────┬────┬──────────────┬────────────────┘
+    │    │    │    │    │    │    │    │              │
+    ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼              ▼
+  :8001:8002:8003:8004:8005:8006:8007:8008          ML stack
+  Auth User Prod  Ord  Pay  Msg  Not  Blog  USSD    (see below)
+                                         :8009
 
- ┌────────────────────────────────────────────────────────────────┐
- │                      ML STACK  (services/soko-ml/)             │
- │                                                                │
- │   ml-gateway-service :8000  ←  called by core services        │
- │        │                   ←  single entry point              │
- │        ├──► price-prediction-service :8001                     │
- │        │         Prophet .pkl models · Redis cache 24h         │
- │        └──► recommendation-service :8002                       │
- │                  Content scoring · Redis cache 1h              │
- │                                                                │
- │   kafka-agent  (no HTTP port)                                  │
- │        ├── consumes: soko.transactions                         │
- │        ├── consumes: soko.interactions                         │
- │        ├── consumes: soko.price.requests                       │
- │        └── produces: soko.price.results · soko.dlq             │
- │                                                                │
- │   Infrastructure: Kafka · Zookeeper · Redis                    │
- └────────────────────────────────────────────────────────────────┘
+    Each service owns its own PostgreSQL database.
+    Core services share one Redis instance for caching.
+    Order service publishes to Kafka → ML layer consumes.
+
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │                 ML STACK  (services/soko-ml/)                        │
+ │                                                                      │
+ │  nginx ──► ml-gateway-service (host :8080 / internal :8000)          │
+ │               │  circuit breakers · request logging · fallbacks      │
+ │               ├──► price-prediction-service  (:8001)                 │
+ │               │         Prophet .pkl models · Redis 24h cache        │
+ │               ├──► recommendation-service    (:8002)                 │
+ │               │         Content scoring · Postgres profiles          │
+ │               │         Redis 1h cache · Kafka interaction boosts    │
+ │               ├──► location-service           (:8003)                │
+ │               │         Market routing · Haversine distance          │
+ │               └──► data-ingestion-service     (:8004)                │
+ │                         Bootstrap profiles from user-service         │
+ │                         Kafka transaction → price observations       │
+ │                                                                      │
+ │  kafka-agent  (no HTTP port)                                         │
+ │       ├── soko.transactions  → soko.interactions  (boost pipeline)   │
+ │       ├── soko.price.requests → price-prediction → soko.price.results│
+ │       └── soko.gaps (coverage gap monitoring)                        │
+ │                                                                      │
+ │  Kafka · Zookeeper · Redis · PostgreSQL (soko_ml_db)                 │
+ └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key design rules
 
-- Every external request enters through **Nginx only** — services are never exposed directly.
-- Every call to the ML layer enters through **ml-gateway-service only** — price and recommendation services are never called directly by core services.
-- Auth is enforced at the gateway via an internal `/verify-token` subrequest to the Auth service before the request reaches any protected service.
-- Core services communicate asynchronously via **RabbitMQ**. The ML layer uses **Kafka** for its own event backbone.
+- Every external request enters through **Nginx only** — core services are never exposed directly on the public network.
+- Every call to the ML intelligence layer goes through **ml-gateway-service only** — downstream ML services are internal.
+- JWT authentication is enforced at the Nginx gateway via an internal `/_verify_token` subrequest to the auth service. Validated user identity (`X-User-Id`, `X-User-Role`) is injected as headers into every downstream service.
+- The recommendation service enforces that a user can only request recommendations for their own account ID — the JWT-derived `X-User-Id` is compared against the path parameter on every request.
+- The two stacks communicate over the `soko-ml-bridge` Docker network and the `soko.transactions` Kafka topic.
 
 ---
 
@@ -88,48 +103,56 @@ The platform is split into two independent but integrated stacks:
 
 ### Auth Service — `:8001`
 
-**Responsibility:** Identity and access. Issues JWTs on login, exposes `/verify-token` which Nginx calls internally on every protected route to validate tokens and inject `X-User-Id`, `X-User-Role`, `X-User-Email` headers downstream.
+Issues JWTs on login and validates them on every protected route. Nginx calls `/verify-token` internally — it never reaches the client. On success it injects `X-User-Id`, `X-User-Role`, `X-User-Email` into downstream headers.
 
-**Nginx route:** `/auth/` and `/oauth/` (public — no auth guard)
+**Nginx route:** `/auth/` and `/oauth/` (public)
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/auth/register` | Register with role `farmer` or `buyer` |
-| POST | `/auth/login` | Login → JWT access token |
-| GET | `/auth/me` | Current user info (JWT required) |
+| POST | `/auth/register` | Register with `role: farmer\|buyer\|both` |
+| POST | `/auth/login` | Login → `{ access_token, refresh_token }` |
+| GET  | `/auth/me` | Current user info (JWT required) |
 | POST | `/auth/refresh` | Refresh an expiring token |
-| GET | `/verify-token` | Internal — called by Nginx, not clients |
+| GET  | `/verify-token` | Internal — called by Nginx, not clients |
+| GET  | `/verify-token-optional` | Internal — for public routes that optionally expose user context |
 
 ---
 
 ### User Service — `:8002`
 
-**Responsibility:** User profiles and account management. Receives the authenticated user context (`X-User-Id`, `X-User-Role`) from Nginx — it never validates tokens itself.
+User profiles and account management. Receives authenticated user context from Nginx and never validates tokens itself. Also exposes internal endpoints used by the ML data-ingestion service to bootstrap the feature store.
 
 **Nginx route:** `/users/` (JWT required)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET  | `/users/me` | JWT | Own profile |
+| PUT  | `/users/me` | JWT | Update profile (specialties, interests, district) |
+| GET  | `/users/farmers` | JWT | List all farmers (paginated) — also used internally by ML ingestion |
+| GET  | `/users/buyers` | JWT | List all buyers (paginated) — also used internally by ML ingestion |
+| GET  | `/users/{id}` | JWT | Single farmer profile |
 
 ---
 
 ### Produce Service — `:8003`
 
-**Responsibility:** Produce listings — creation, search, stock management. Farmers create listings; buyers browse them. Publishes `produce.listed` events to RabbitMQ so the recommendation service can index new listings.
+Produce listings — creation, search, and stock management. Farmers create listings; buyers browse them. Supports image uploads via Cloudinary.
 
-**Nginx route:** `/listings/` (JWT required, 20 MB upload limit for images)
+**Nginx route:** `/listings/` (JWT optional — public browsing, auth to create)
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/listings/` | farmer | Create a listing |
-| GET | `/listings/` | JWT | Browse / search (filter by category, district, price) |
-| GET | `/listings/{id}` | JWT | Single listing |
-| PATCH | `/listings/{id}` | farmer | Update own listing |
+| POST   | `/listings/` | farmer | Create a listing |
+| GET    | `/listings/` | optional | Browse / search (filter by category, district, price) |
+| GET    | `/listings/{id}` | optional | Single listing |
+| PUT    | `/listings/{id}` | farmer | Update own listing |
 | DELETE | `/listings/{id}` | farmer | Remove listing |
-| PATCH | `/listings/{id}/reduce-stock` | internal | Called by Order service on order placement |
 
 ---
 
 ### Order Service — `:8004`
 
-**Responsibility:** Order lifecycle from placement to completion. Buyers place orders against listings; farmers accept or reject; status advances through a defined state machine.
+Order lifecycle from placement to completion. Publishes `purchase_completed` events to `soko.transactions` on Kafka on every successful checkout — this is the primary data source for ML price observations and interaction boosts.
 
 **Nginx route:** `/orders/` (JWT required)
 
@@ -144,18 +167,18 @@ placed → pending
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/orders/` | buyer | Place order |
-| GET | `/orders/` | buyer | List own orders |
-| PATCH | `/orders/{id}/cancel` | buyer | Cancel a pending order |
-| POST | `/orders/{id}/review` | buyer | Review a completed order |
-| GET | `/orders/incoming/` | farmer | Orders for farmer's produce |
-| PATCH | `/orders/{id}/status` | farmer | Advance order status |
+| POST  | `/orders/` | buyer | Place order → publishes to `soko.transactions` |
+| GET   | `/orders/` | buyer | List own orders |
+| POST  | `/orders/{id}/cancel` | buyer | Cancel → publishes cancellation to Kafka |
+| POST  | `/orders/{id}/review` | buyer | Rate after completion |
+| GET   | `/orders/incoming/` | farmer | Orders for farmer's produce |
+| PATCH | `/orders/{id}/status` | farmer | Advance status |
 
 ---
 
 ### Payment Service — `:8005`
 
-**Responsibility:** Payment initiation and reconciliation via PesaPal (MTN Mobile Money / Airtel Money). The `/webhook/` endpoint is public so PesaPal can POST payment confirmations without authentication.
+Payment initiation and reconciliation via PesaPal (MTN Mobile Money / Airtel Money). The `/webhook/` endpoint is public so PesaPal can POST confirmations without a token.
 
 **Nginx routes:** `/payments/` (JWT required) · `/webhook/` (public)
 
@@ -163,7 +186,7 @@ placed → pending
 
 ### Message Service — `:8006`
 
-**Responsibility:** Real-time direct messaging between farmers and buyers over WebSocket. The WebSocket upgrade (`/message/ws/`) bypasses the JWT subrequest — token is validated by the service itself on connection.
+Real-time direct messaging over WebSocket. Token is validated by the service itself on WebSocket connection.
 
 **Nginx routes:** `/message/` (JWT required) · `/message/ws/` (WebSocket, service-auth)
 
@@ -171,7 +194,7 @@ placed → pending
 
 ### Notification Service — `:8007`
 
-**Responsibility:** Push notifications delivered in real-time over WebSocket. Consumes events from RabbitMQ (order updates, payment confirmations) and pushes them to connected clients.
+Push notifications delivered over WebSocket. Receives events from order and payment services and pushes them to connected clients.
 
 **Nginx routes:** `/notifications/` (JWT required) · `/notifications/ws/` (WebSocket, service-auth)
 
@@ -179,115 +202,152 @@ placed → pending
 
 ### Blog Service — `:8008`
 
-**Responsibility:** Agri-knowledge articles and market commentary. Supports image uploads up to 10 MB.
+Agri-knowledge articles and market commentary. Supports image uploads up to 10 MB via Cloudinary.
 
-**Nginx route:** `/posts/` (JWT required, 10 MB upload limit)
+**Nginx route:** `/posts/` (JWT optional — public reading, auth to create)
 
 ---
 
 ### USSD Service — `:8009`
 
-**Responsibility:** USSD session handler for feature-phone users. Completely public — USSD networks don't carry HTTP auth headers. Allows farmers with basic handsets to check prices and receive order notifications.
+USSD session handler for feature-phone users. Allows farmers with basic handsets to check prices and receive order notifications without a smartphone. Calls the ML gateway for price predictions.
 
-**Nginx route:** `/ussd/` (public — no auth guard)
-
----
-
-### Recommendation Service — `:8010`
-
-**Responsibility:** Personalised produce feed for buyers based on order history, category preferences, and produce quality scores. Consumes `produce.listed`, `order.placed`, and `quality.scored` events from RabbitMQ to keep its index fresh. This is the **existing** rule-based recommendation service, separate from the ML farmer/buyer matching layer.
-
-**Nginx route:** `/recommendations/` (public)
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/recommendations/` | Personalised feed for authenticated buyer |
-| GET | `/recommendations/produce/{id}/score` | Quality score for a listing |
+**Nginx route:** `/ussd/` (public — USSD networks carry no auth headers)
 
 ---
 
 ## ML Layer
 
-The ML layer lives in `services/soko-ml/` and runs as a **separate Docker Compose stack**. It has four services of its own, plus Kafka and a dedicated Redis instance.
+The ML layer lives in `services/soko-ml/` and runs as a separate Docker Compose stack. All six services connect to the core stack via the `soko-ml-bridge` Docker network.
 
-### ml-gateway-service — `:8000`
+### ml-gateway-service — host `:8080` / internal `:8000`
 
-The single entry point for all ML capabilities. No core service should ever call the price or recommendation ML services directly — they call this gateway, which adds:
+Single entry point for all ML capabilities. Nginx proxies `/ml/*` and `/recommendations/*` here. Adds circuit breaking (3 failures → open, 30s reset), request logging, and graceful fallback responses.
 
-- **Request logging** — service name, endpoint, latency, cache hit/miss
-- **Circuit breaking** — if a downstream ML service is unreachable after 3 retries, returns a graceful fallback response instead of propagating a 500
-- **Health aggregation** — `GET /health` polls all downstream services and returns a combined status
-
-| Gateway endpoint | Proxied to |
-|---|---|
-| `POST /price/predict` | price-prediction-service `/predict` |
-| `GET /price/markets` | price-prediction-service `/markets` |
-| `GET /price/crops` | price-prediction-service `/crops` |
-| `GET /recommend/farmers-for-buyer/{buyer_id}` | recommendation-service |
-| `GET /recommend/buyers-for-farmer/{farmer_id}` | recommendation-service |
-| `GET /health` | aggregated from all downstream |
+| Gateway Endpoint | Routes to | Auth |
+|---|---|---|
+| `POST /price/predict` | price-prediction-service | public |
+| `GET /price/markets` | price-prediction-service | public |
+| `GET /price/crops` | price-prediction-service | public |
+| `GET /recommend/farmers-for-buyer/{buyer_id}` | recommendation-service | JWT required |
+| `GET /recommend/buyers-for-farmer/{farmer_id}` | recommendation-service | JWT required |
+| `POST /location/route` | location-service | public |
+| `POST /location/discover` | location-service | public |
+| `GET /gaps/summary` | data-ingestion-service | public |
+| `GET /coverage` | data-ingestion-service | public |
+| `POST /ingest/bootstrap` | data-ingestion-service | internal |
+| `GET /health` | aggregated from all downstream | public |
 
 ---
 
-### price-prediction-service — `:8001` (ML stack internal)
+### price-prediction-service — internal `:8001`
 
 Serves 4-week price forecasts per market–crop pair in UGX using pre-trained **Prophet** models.
 
-- Loads `.pkl` model files from `models/` at startup (one model per market–crop pair, 48 total)
-- Checks **Redis** on every request (`price:v1:{market}:{crop}:{weeks}`, TTL 24 h)
-- Falls back to Uganda seasonal heuristics if no model file is present (always responds)
-- Publishes a `price.predicted` event to `soko.price.results` after every inference
-- Consumes `soko.price.requests` for async batch prediction jobs
+- Loads `.pkl` model files from `models/` at startup
+- Falls back to Uganda bimodal seasonal heuristics when no model file exists
+- Caches predictions in Redis (TTL 24 h, key: `price:v1:{market}:{crop}:{weeks}`)
+- Consumes `soko.price.requests`; publishes to `soko.price.results`
 
 **Supported markets:** Kisenyi_Kampala · Gulu · Mbarara · Mbale · Lira · Masaka
 
 **Supported crops:** maize_grain · yellow_beans · irish_potatoes · tomatoes · matoke · cassava_chips · sorghum · millet
 
+**Uganda bimodal seasonality factors applied:**
+- Jun–Jul, Nov–Dec: ×0.92 (post-harvest abundance)
+- Jan–Feb: ×1.10 (lean dry season)
+
 ---
 
-### recommendation-service — `:8002` (ML stack internal)
+### recommendation-service — internal `:8002`
 
-Recommends high-performing farmers to buyers and vice versa using a **weighted content-based scoring model** enriched in real-time from Kafka interaction events.
+Recommends high-performing farmers to buyers and vice versa using **weighted content-based scoring** enriched in real-time from Kafka interaction events.
 
-- Loads `farmers.csv` (200 profiles) and `buyers.csv` (300 profiles) at startup
-- Scores farmer–buyer compatibility on crop overlap, market overlap, rating, fulfillment rate
-- Boosts scores dynamically from Kafka events: view +0.02, inquiry +0.05, purchase +0.10, rating +0.04
-- Caches results in Redis (`rec:farmers:{buyer_id}:{top_n}`, TTL 1 h)
-- Invalidates cache when a relevant interaction event arrives
+- Loads profiles from the ML feature store (PostgreSQL `soko_ml_db`) at startup
+- Refreshes profiles every 15 minutes (`PROFILE_REFRESH_INTERVAL_SECONDS`)
+- Exposes `POST /internal/reload` so data-ingestion can trigger an immediate refresh after bootstrap
+- Enforces identity: `x-user-id` from JWT must match the `{buyer_id}` or `{farmer_id}` path parameter
+- Caches results in Redis (TTL 1 h)
+- Invalidates cache on relevant Kafka interaction events
 
-**Scoring weights — farmers for buyer:**
+**Scoring — farmers for buyer:**
 
 | Signal | Weight |
 |---|---|
-| Crop overlap (buyer wants ∩ farmer offers) | 0.35 |
-| Market overlap | 0.20 |
+| Crop overlap: buyer interests ∩ farmer specialties / \|buyer interests\| | 0.35 |
+| District match (exact) | 0.20 |
 | Farmer average rating (normalised / 5.0) | 0.20 |
-| Fulfillment rate | 0.15 |
-| Interaction boost (Kafka, additive, capped +0.20) | additive |
+| Farmer fulfillment rate | 0.15 |
+| Interaction boost from `soko.interactions` (capped +0.20) | additive |
 
-**Scoring weights — buyers for farmer:**
+**Scoring — buyers for farmer:**
 
 | Signal | Weight |
 |---|---|
-| Crop overlap (farmer offers ∩ buyer wants) | 0.35 |
-| Market overlap | 0.20 |
-| Payment reliability | 0.25 |
-| Purchase volume (normalised by dataset max) | 0.20 |
+| Crop overlap: farmer specialties ∩ buyer interests / \|farmer specialties\| | 0.35 |
+| District match (exact) | 0.20 |
+| Buyer payment reliability | 0.25 |
+| Buyer spend volume (normalised by dataset max) | 0.20 |
+
+**Interaction boost values:**
+
+| Event type | Boost |
+|---|---|
+| `farmer_viewed` | +0.02 |
+| `buyer_inquiry` | +0.05 |
+| `purchase_completed` | +0.10 |
+| `rating_submitted` | +0.04 |
+| `high_rating` | +0.08 |
 
 ---
 
-### kafka-agent
+### data-ingestion-service — internal `:8004`
 
-Long-running Python process — no HTTP port. Bridges the core Soko event stream with the ML layer.
+Populates and maintains the ML feature store.
 
-| Consumes | Event types | Action |
+**Bootstrap (runs at startup or `POST /bootstrap`):**
+1. Fetches all farmer profiles from `GET /users/farmers` on the user service
+2. Fetches all buyer profiles from `GET /users/buyers` on the user service
+3. Transforms and upserts into `farmer_features` and `buyer_features` tables
+4. After bootstrap, immediately calls `POST /internal/reload` on the recommendation service so new users appear in recommendations within seconds rather than waiting for the 15-minute timer
+
+**Streaming:**
+- Consumes `soko.transactions` Kafka topic
+- Normalises crop names and maps delivery districts to ML market nodes
+- Inserts price observations into `price_observations` table
+- Detects outliers (rejects prices > 3σ from rolling 30-obs mean)
+
+**Coverage tracking:** Maintains `coverage_map` per (crop, market) pair. When a pair reaches 52 observations, it is flagged as `model_ready`.
+
+---
+
+### location-service — internal `:8003`
+
+Routes farmers to optimal markets and helps buyers discover local supply.
+
+**Tiered routing:**
+
+| Tier | Condition | Response |
 |---|---|---|
-| `soko.transactions` | `purchase_completed`, `order_cancelled` | Publishes enriched event to `soko.interactions` |
-| `soko.interactions` | `farmer_viewed`, `buyer_inquiry`, `rating_submitted` | Logged and forwarded; recommendation-service has its own consumer |
-| `soko.price.requests` | `price_prediction_requested` | Calls price-prediction-service, publishes result to `soko.price.results` |
-| `soko.ml.events` | `retrain_requested`, `model_deployed` | Logged, triggers downstream refresh |
+| 1 | Crop supported + ≥52 price observations for market | Top 3 markets ranked by price minus transport cost |
+| 2 | Crop supported + <52 observations | Fallback to aggregated cross-market price data |
+| 3 | Crop completely unsupported | Publishes `CoverageGapEvent` to `soko.gaps`; returns generic suggestion |
 
-Failed messages go to `soko.dlq` with full error context.
+---
+
+### kafka-agent — no HTTP port
+
+Long-running process that bridges the Kafka event stream:
+
+| Consumes | Action |
+|---|---|
+| `soko.transactions` | Forwards `purchase_completed` events to `soko.interactions` (recommendation boost pipeline) |
+| `soko.transactions` | Forwards to data-ingestion via `POST /ingest/order-event` (price observations) |
+| `soko.price.requests` | Calls price-prediction-service, publishes result to `soko.price.results` |
+| `soko.interactions` | Logged (recommendation-service has its own consumer on this topic) |
+| `soko.gaps` | Logs coverage gap events for monitoring |
+
+Failed messages go to `soko.dlq` with full error context for replay.
 
 ---
 
@@ -298,73 +358,134 @@ Failed messages go to `soko.dlq` with full error context.
 | Kafka | `confluentinc/cp-kafka:7.5.0` | 1 broker, auto-topic creation off |
 | Zookeeper | `confluentinc/cp-zookeeper:7.5.0` | — |
 | Redis | `redis:7-alpine` | 256 MB max, `allkeys-lru` eviction |
+| PostgreSQL | `postgres:16-alpine` | `soko_ml_db` database |
 
 **Kafka topics:**
 
 | Topic | Partitions | Retention | Purpose |
 |---|---|---|---|
-| `soko.transactions` | 6 | 7 days | Purchase and order events |
-| `soko.interactions` | 6 | 3 days | Views, inquiries, ratings |
-| `soko.price.requests` | 3 | 1 day | Async prediction requests |
-| `soko.price.results` | 3 | 1 day | Async prediction results |
+| `soko.transactions` | 6 | 7 days | Purchase and order events from order-service |
+| `soko.interactions` | 6 | 3 days | Views, inquiries, ratings (recommendation boosts) |
+| `soko.price.requests` | 3 | 1 day | Async price prediction requests |
+| `soko.price.results` | 3 | 1 day | Async price prediction responses |
 | `soko.ml.events` | 2 | 14 days | Model lifecycle events |
+| `soko.gaps` | 2 | 30 days | Coverage gap notifications |
 | `soko.dlq` | 2 | 30 days | Dead-letter queue |
-
-**Redis cache keys:**
-
-| Key pattern | TTL | Stores |
-|---|---|---|
-| `price:v1:{market}:{crop}:{weeks}` | 24 h | Full prediction response |
-| `rec:farmers:{buyer_id}:{top_n}` | 1 h | Recommended farmers list |
-| `rec:buyers:{farmer_id}:{top_n}` | 1 h | Recommended buyers list |
-| `model:meta:{market}:{crop}` | 7 days | Model training date, MAPE |
 
 ---
 
-## How the Two Stacks Interact
+## Auth → ML: The Authenticated Recommendation Flow
+
+This is the full end-to-end flow for a user receiving personalised recommendations:
 
 ```
-Core Soko stack                         ML stack
-─────────────────                       ─────────────────────────────────────
-                                        ml-gateway-service :8000
-recommendation_service :8010 ──HTTP──►  GET /recommend/farmers-for-buyer/
-                                        GET /recommend/buyers-for-farmer/
+1. User registers
+   POST /auth/register { email, password, role: "buyer" }
+   → auth_service creates account + user_service creates profile
 
-produce_service :8003        ──HTTP──►  POST /price/predict
-                                        (surface price context on listing pages)
+2. User updates profile with interests
+   PUT /users/me { interests: ["Grains", "Legumes"], district: "Kampala" }
+   → user_service stores interests and district
 
-order_service :8004          ──Kafka──► soko.transactions
-                                        (kafka-agent listens, enriches to
-                                         soko.interactions for rec boosts)
+3. ML data-ingestion bootstrap (runs on startup or make ingest-bootstrap)
+   data-ingestion-service fetches:
+     GET http://user_service:8002/users/farmers  (with X-Internal-Secret)
+     GET http://user_service:8002/users/buyers   (with X-Internal-Secret)
+   → upserts into farmer_features / buyer_features in soko_ml_db
+   → immediately calls POST http://recommendation-service:8002/internal/reload
+   → recommendation-service reloads profiles from soko_ml_db within seconds
 
-ussd_service :8009           ──HTTP──►  POST /price/predict
-                                        (price checks on feature phones)
+4. User requests recommendations (authenticated)
+   GET /ml/recommend/farmers-for-buyer/{user_id}
+       Authorization: Bearer <token>
+
+   Nginx flow:
+   a) /_verify_token subrequest → auth_service validates JWT
+   b) auth_service returns X-User-Id: {user_id}, X-User-Role: buyer
+   c) Nginx injects X-User-Id, X-User-Role and proxies to ml-gateway:8000
+
+   ML gateway flow:
+   d) Extracts X-User-Id and X-User-Role from incoming headers
+   e) Forwards to recommendation-service:8002/recommend/farmers-for-buyer/{user_id}
+      with X-User-Id header attached
+
+   Recommendation service:
+   f) Reads X-User-Id header
+   g) Validates: X-User-Id MUST equal {buyer_id} path parameter (403 if mismatch)
+   h) Looks up buyer profile from in-memory ProfileStore (loaded from soko_ml_db)
+   i) Scores all farmers: crop_overlap × 0.35 + district_match × 0.20 +
+      avg_rating × 0.20 + fulfillment × 0.15 + interaction_boost (max +0.20)
+   j) Returns top N farmers ranked by score, with matchScore field
+
+5. As the user transacts, scores improve automatically
+   Order placed → order_service publishes to soko.transactions
+   kafka-agent → soko.interactions (purchase_completed event)
+   recommendation-service Kafka consumer → interaction_store += +0.10 boost
+   → Redis cache invalidated → next request returns re-ranked results
 ```
 
-The ML stack is intentionally decoupled — the core stack calls `ml-gateway-service` over HTTP and publishes to Kafka topics. The ML layer never calls back into the core stack.
+---
+
+## How the Two Stacks Integrate
+
+```
+Core stack                              ML stack
+──────────────────                      ──────────────────────────────────
+order_service:8004  ──Kafka──►          soko.transactions
+                                         └── data-ingestion (price obs)
+                                         └── kafka-agent → soko.interactions
+                                              └── recommendation (boost)
+
+nginx:80  ──proxy──►                    ml-gateway:8000
+  /ml/price/     (public)               └── price-prediction-service:8001
+  /ml/recommend/ (JWT auth) ──x-user-id──► recommendation-service:8002
+  /recommendations/ (JWT auth)
+
+data-ingestion:8004  ──HTTP──►          user_service:8002
+                                         GET /users/farmers
+                                         GET /users/buyers
+
+ussd_service:8009  ──HTTP──►            ml-gateway:8000
+                                         POST /price/predict
+```
+
+Both stacks share the `soko-ml-bridge` Docker network. Core service names (`user_service`, `order_service`, `produce_service`) are resolvable from ML services on that bridge.
+
+**Internal secret:** All service-to-service calls use `X-Internal-Secret: internal-secret` (set by `INTERNAL_SECRET` in core services and `INTERNAL_API_KEY` in the ML stack). These must match.
 
 ---
 
 ## API Reference
 
-All requests enter via `http://localhost:80` through Nginx. Protected routes require an `Authorization: Bearer <token>` header.
+All external requests enter via `http://localhost:80` through Nginx. Protected routes require `Authorization: Bearer <token>`.
 
-### Auth
+### Authentication
 
 ```http
-POST /auth/register         { "email": "...", "password": "...", "role": "farmer|buyer" }
-POST /auth/login            { "email": "...", "password": "..." }  →  { "access_token": "..." }
-GET  /auth/me               Authorization: Bearer <token>
-POST /auth/refresh          Authorization: Bearer <token>
+POST /auth/register   { "email": "...", "password": "...", "role": "farmer|buyer|both" }
+POST /auth/login      { "email": "...", "password": "..." }
+GET  /auth/me         Authorization: Bearer <token>
+POST /auth/refresh    Authorization: Bearer <token>
+```
+
+### User Profile
+
+```http
+GET  /users/me        Authorization: Bearer <token>
+PUT  /users/me        { "fullName": "...", "district": "Kampala",
+                        "specialties": ["maize", "beans"],   # farmers
+                        "interests": ["Grains", "Legumes"] } # buyers
+GET  /users/farmers   ?district=Kampala&page=1&limit=20
+GET  /users/{id}
 ```
 
 ### Produce
 
 ```http
-GET  /listings/             ?category=grains&district=Kampala&min_price=500&max_price=2000
-POST /listings/             { "title", "category", "price_per_kg", "quantity_kg", "district" }
-GET  /listings/{id}
-PATCH /listings/{id}
+GET    /listings/     ?category=grains&district=Kampala&min_price=500&max_price=2000
+POST   /listings/     { "title", "category", "price_per_kg", "quantity_kg", "district" }
+GET    /listings/{id}
+PUT    /listings/{id}
 DELETE /listings/{id}
 ```
 
@@ -373,267 +494,232 @@ DELETE /listings/{id}
 ```http
 POST  /orders/              { "listing_id": "...", "quantity_kg": 100 }
 GET   /orders/
-PATCH /orders/{id}/cancel
+POST  /orders/{id}/cancel
 POST  /orders/{id}/review   { "rating": 5, "comment": "..." }
-GET   /orders/incoming/                                (farmer)
-PATCH /orders/{id}/status   { "new_status": "confirmed|completed|rejected" }  (farmer)
+GET   /orders/incoming/                                  (farmer only)
+PATCH /orders/{id}/status   { "new_status": "confirmed|completed|rejected" }
 ```
 
 ### Payments
 
 ```http
-POST /payments/initiate     { "order_id": "...", "phone": "256700000000" }
+POST /payments/initiate   { "order_id": "...", "phone": "256700000000" }
 GET  /payments/{id}/status
-POST /webhook/pesapal       (PesaPal callback — public)
+POST /webhook/pesapal     (public — PesaPal callback)
 ```
 
-### Messaging & Notifications
+### ML — Price Prediction (public, via Nginx)
 
 ```http
-GET  /message/              List conversations
-POST /message/              { "recipient_id": "...", "body": "..." }
-WS   /message/ws/{token}    Real-time message stream
-
-GET  /notifications/        List notifications
-WS   /notifications/ws/{token}  Real-time push stream
+POST /ml/price/predict    { "market": "Kisenyi_Kampala", "crop": "maize_grain", "weeks_ahead": 4 }
+GET  /ml/price/markets
+GET  /ml/price/crops
 ```
 
-### ML (via ml-gateway-service — not through Nginx)
+### ML — Recommendations (JWT required, via Nginx)
 
 ```http
-POST http://localhost:8000/price/predict
-     { "market": "Kisenyi_Kampala", "crop": "maize_grain", "weeks_ahead": 4 }
+GET /ml/recommend/farmers-for-buyer/{your_user_id}?top_n=5
+    Authorization: Bearer <token>
 
-GET  http://localhost:8000/recommend/farmers-for-buyer/B0001?top_n=5
-GET  http://localhost:8000/recommend/buyers-for-farmer/F0001?top_n=5
-GET  http://localhost:8000/health
-GET  http://localhost:8000/price/markets
-GET  http://localhost:8000/price/crops
+GET /ml/recommend/buyers-for-farmer/{your_user_id}?top_n=5
+    Authorization: Bearer <token>
+```
+
+The path `{your_user_id}` must be your own user ID from the JWT. The recommendation service returns 403 if you attempt to request another user's recommendations.
+
+### ML — Admin/Internal (bypass Nginx, dev only)
+
+```http
+GET  http://localhost:8080/health
+POST http://localhost:8096/bootstrap
+GET  http://localhost:8096/bootstrap/status
+GET  http://localhost:8096/coverage
+GET  http://localhost:8096/gaps/summary
+POST http://localhost:8095/internal/reload   X-Internal-Secret: internal-secret
 ```
 
 ---
 
 ## User Flows
 
-### Farmer
+### Farmer — complete flow
 
 ```
 1. POST /auth/register  { role: "farmer" }
 2. POST /auth/login     → JWT
-3. POST /listings/      List produce with price and quantity
-4. GET  /orders/incoming/    See buyer orders
-5. PATCH /orders/{id}/status  { "new_status": "confirmed" }
-6. PATCH /orders/{id}/status  { "new_status": "completed" }
+3. PUT  /users/me       { specialties: ["maize", "beans"], district: "Kampala" }
+4. POST /listings/      List produce with price and available quantity
+5. GET  /orders/incoming/    See buyer orders
+6. PATCH /orders/{id}/status  { new_status: "confirmed" }
+7. PATCH /orders/{id}/status  { new_status: "completed" }
+8. GET  /ml/recommend/buyers-for-farmer/{farmer_id}   See matched buyers
 ```
 
-### Buyer
+### Buyer — complete flow
 
 ```
 1. POST /auth/register  { role: "buyer" }
 2. POST /auth/login     → JWT
-3. GET  /listings/      Browse produce (filter by district, crop, price)
-4. POST /orders/        Place order
-5. POST /payments/initiate   Pay via Mobile Money
-6. POST /orders/{id}/review  Rate after completion
-7. GET  /recommendations/    See personalised feed
+3. PUT  /users/me       { interests: ["Grains", "Legumes"], district: "Gulu" }
+4. GET  /listings/      Browse produce (filter by district, crop, price)
+5. POST /orders/        Place order
+6. POST /payments/initiate   Pay via Mobile Money
+7. POST /orders/{id}/review  Rate after completion
+8. GET  /ml/recommend/farmers-for-buyer/{buyer_id}   See matched farmers
+                                                      (personalised to your interests)
 ```
 
-### Price check (USSD — no smartphone needed)
+### Price check (USSD — feature phones)
 
 ```
 1. Farmer dials USSD short code
-2. ussd_service calls ml-gateway-service POST /price/predict
-3. 4-week maize price forecast returned as plain text to handset
+2. ussd_service calls POST http://ml-gateway:8000/price/predict
+3. 4-week price forecast returned as plain text to handset
 ```
 
 ---
 
-## Event System
+## Event System (Kafka)
 
-### RabbitMQ — Core stack events
+The core stack publishes order events to Kafka. The ML layer consumes them for price learning and recommendation boosting.
 
-| Event | Publisher | Consumers | Effect |
-|---|---|---|---|
-| `produce.listed` | Produce | Recommendation | Index new listing |
-| `order.placed` | Order | Recommendation, Notification | Update feed; notify farmer |
-| `order.completed` | Order | Notification | Notify buyer |
-| `quality.scored` | Order | Produce, Recommendation | Update avg_rating; re-rank |
-| `payment.confirmed` | Payment | Notification, Order | Unlock fulfillment |
+### Topics and flows
 
-All queues are durable. Payload schemas are in [CONTRACTS.md](CONTRACTS.md).
+```
+order_service (checkout)
+  └── PUBLISH soko.transactions { event_type: "purchase_completed",
+                                   buyer_id, farmer_id, crop, market,
+                                   quantity_kg, price_per_kg_ugx, total_ugx }
 
-### Kafka — ML layer events
+kafka-agent (transaction consumer)
+  ├── PUBLISH soko.interactions { event_type: "purchase_completed",
+  │                                buyer_id, farmer_id }
+  │       └── recommendation-service Kafka consumer applies +0.10 boost
+  │               and invalidates Redis cache for this buyer-farmer pair
+  └── HTTP POST data-ingestion-service /ingest/order-event
+          └── normalises crop name, maps district → market, inserts price_observation
 
-| Event | Flow |
-|---|---|
-| `purchase_completed` | order_service → `soko.transactions` → kafka-agent → `soko.interactions` → recommendation-service (boost +0.10) |
-| `price_prediction_requested` | Any service → `soko.price.requests` → kafka-agent → price-prediction-service → `soko.price.results` |
-| `farmer_viewed` | recommendation_service → `soko.interactions` → recommendation-service (boost +0.02) |
+location-service (Tier 3 fallback — unsupported crop)
+  └── PUBLISH soko.gaps { event_type: "crop_coverage_gap",
+                           crop_submitted, category_guess, priority }
+          └── kafka-agent CoverageGapConsumer logs and monitors
+
+Any service
+  └── PUBLISH soko.price.requests { market, crop, weeks_ahead }
+          └── kafka-agent PriceRequestConsumer calls price-prediction-service
+              └── PUBLISH soko.price.results { predictions: [...] }
+```
+
+### Dead-letter queue
+
+Any message that fails processing after all retries is written to `soko.dlq` with the original topic, raw value, error type, and error message — enabling offline replay and audit.
 
 ---
 
-## Getting the ML Stack Running
+## Getting Started
 
-All commands run from the **project root**. Prerequisites: Docker 20+, Python 3.11, Make.
+All commands run from the **project root**. Prerequisites: Docker 20+, Python 3.11+, Make.
 
-### Step 1 — Install Python dependencies
-
-```bash
-make install
-```
-
-Creates a `.venv` inside each ML service folder and installs its `requirements.txt`. Prophet pulls in `pystan` — expect 3–5 minutes on first run.
-
-### Step 2 — Generate synthetic training data
+### 1. Copy and configure environment files
 
 ```bash
-make generate-data
+cp services/soko-ml/.env.example services/soko-ml/.env
+# Edit services/soko-ml/.env — set POSTGRES_PASSWORD and any keys
 ```
 
-Writes three files to `services/soko-ml/recommendation-service/data/raw/`:
+Core service `.env` files are already populated with development defaults in each `services/<name>/.env`.
 
-- `crop_prices_raw.csv` — 4 years of weekly UGX prices, 6 markets × 8 crops (~12,000 rows)
-- `farmers.csv` — 200 synthetic farmer profiles with crop/market coverage, rating, fulfillment rate
-- `buyers.csv` — 300 synthetic buyer profiles with preferred crops, markets, payment reliability
-
-Verify the output:
-```bash
-wc -l services/soko-ml/recommendation-service/data/raw/*.csv
-# expect: 12289 crop_prices_raw.csv  |  201 farmers.csv  |  301 buyers.csv
-```
-
-### Step 3 — Train the Prophet models
+### 2. Start the core stack
 
 ```bash
-make train
+make core-up
+# or: docker compose up --build -d
 ```
 
-Trains 48 Prophet models (6 markets × 8 crops) with Uganda bimodal seasonality and saves `.pkl` files to `services/soko-ml/price-prediction-service/models/`. Takes 5–15 minutes depending on CPU.
-
-> **You can skip this step.** The price-prediction-service has a built-in seasonal fallback that always returns a valid forecast. Skip `make train` for a faster first boot and run it later in the background.
-
-Verify:
+Verify all 9 core services are healthy:
 ```bash
-ls services/soko-ml/price-prediction-service/models/ | wc -l
-# expect: 48
+curl http://localhost/health
 ```
 
-### Step 4 — Start the ML stack
+### 3. Start the ML stack
 
 ```bash
-make up
+make ml-up
+# or: cd services/soko-ml && docker compose --env-file .env up --build -d
 ```
 
-Builds and starts 8 containers: Zookeeper, Kafka, kafka-init (topic creation), Redis, price-prediction-service, recommendation-service, ml-gateway-service, kafka-agent.
-
-Watch the startup log until you see these three lines, then proceed:
+Watch startup logs until all services report healthy:
 ```bash
-make logs
-# Look for:
-# soko-ml-kafka-init  | All Kafka topics created.
-# soko-ml-rec         | {"event": "recommendation_service_started", "farmers": 200, "buyers": 300}
-# soko-ml-gateway     | {"event": "gateway_started"}
+make ml-logs
 ```
-Kafka takes ~30 seconds to elect a leader — the ML services will retry automatically.
 
-### Step 5 — Health check
+### 4. Seed the database with test data
 
 ```bash
-make health
+make seed
 ```
 
-All three services must return `"ok"` before proceeding:
+Registers 13 farmers and 10 buyers via the auth API, updates their profiles (district, specialties, interests), and creates produce listings. After seeding, triggers `make ingest-bootstrap` automatically.
 
-```json
-=== ML Gateway ===
-{
-    "gateway": "ok",
-    "services": { "price-prediction": "ok", "recommendation": "ok" },
-    "circuit_breakers": { "price-prediction": "closed", "recommendation": "closed" }
-}
-=== Price Service ===
-{ "status": "ok", "service": "price-prediction-service", "models_loaded": 48 }
-=== Recommendation Service ===
-{ "status": "ok", "service": "recommendation-service", "farmers_loaded": 200, "buyers_loaded": 300 }
-```
-
-### Step 6 — Run unit tests (no Docker required)
+### 5. Bootstrap the ML feature store
 
 ```bash
-make test
+make ingest-bootstrap
 ```
 
-Runs pytest across all three FastAPI services — pure logic tests, no Redis or Kafka needed:
+Pulls all profiles from user-service into `soko_ml_db` and immediately triggers a recommendation-service reload. After this, recommendations are live.
+
+### 6. Verify the full stack
 
 ```bash
-make test-price    # 11 tests — fallback predict, base UGX prices, model registry
-make test-rec      # 14 tests — scoring, ranking, interaction boosts, cache invalidation
-make test-gateway  # 11 tests — proxy, circuit breaker, health aggregation
+make health      # Check all ML service health endpoints
+make smoke-test  # End-to-end: price prediction + farmer recs + buyer recs
 ```
-
-### Step 7 — Smoke test (full round trip)
-
-```bash
-make smoke-test
-```
-
-Fires three live HTTP calls through the gateway and prints the JSON. On the second run, the price response returns `"cached": true` — confirming Redis is working.
 
 ### What to look for if something fails
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `"recommendation": "unreachable"` in health | CSVs not generated | Run `make generate-data` |
-| `"models_loaded": 0` in price health | No `.pkl` files | Run `make train`, or rely on fallback |
-| Gateway returns `503` | Service startup race | Wait 30 s; check `make logs` |
+| `"recommendation": "unreachable"` | Feature store empty at startup | Run `make ingest-bootstrap` |
+| `"models_loaded": 0"` in price health | No `.pkl` files | Run `make train`, or rely on seasonal fallback |
+| Gateway returns `503` | Service startup race | Wait 30 s, check `make ml-logs` |
 | `kafka-init` exits immediately | Kafka not ready | It restarts automatically; wait |
-| `"cached": true` on first call | Stale Redis from prior run | `make redis-cli` → `FLUSHDB` |
+| Recommendations return 404 | User not in feature store | Run `make ingest-bootstrap` |
+| Recommendations return 403 | JWT user_id ≠ path param | Use your own user ID in the URL |
+| `"cached": true` on first call | Stale Redis from prior run | `docker exec soko-ml-redis redis-cli FLUSHDB` |
 
 ---
 
 ## Makefile Reference
 
-All targets run from the project root.
+All targets run from the **project root**.
 
-### Setup
-
-| Command | What it does |
-|---|---|
-| `make install` | Create `.venv` in each ML service and install deps |
-| `make generate-data` | Write synthetic CSVs to `services/soko-ml/recommendation-service/data/raw/` |
-| `make train` | Train 48 Prophet models → `services/soko-ml/price-prediction-service/models/` |
-
-### Development (local, no Docker)
+### Stack lifecycle
 
 | Command | What it does |
 |---|---|
-| `make dev` | Full ML stack with hot reload (docker-compose.dev.yml) |
-| `make dev-price` | Run price-prediction-service locally, port 8001 |
-| `make dev-rec` | Run recommendation-service locally, port 8002 |
-| `make dev-gateway` | Run ml-gateway-service locally, port 8000 |
+| `make core-up` | Start core stack (docker compose up --build -d) |
+| `make core-down` | Stop core stack |
+| `make ml-up` | Start ML stack (services/soko-ml) |
+| `make ml-down` | Stop ML stack |
+| `make up` | Start both stacks |
+| `make down` | Stop both stacks |
+| `make restart` | Restart ML stack |
+| `make logs` / `make ml-logs` | Follow ML service logs |
+| `make logs-price` | price-prediction-service logs only |
+| `make logs-rec` | recommendation-service logs only |
+| `make logs-gateway` | ml-gateway-service logs only |
+| `make logs-agent` | kafka-agent logs only |
 
-### Infrastructure
-
-| Command | What it does |
-|---|---|
-| `make infra-up` | Start Redis + Kafka + Zookeeper only (no ML services) |
-| `make infra-down` | Stop infrastructure containers |
-| `make kafka-topics` | Re-create all Kafka topics (idempotent) |
-| `make kafka-ui` | List all Kafka topics in terminal |
-| `make redis-cli` | Open Redis CLI in the running container |
-
-### Production
+### Data and models
 
 | Command | What it does |
 |---|---|
-| `make up` | `docker-compose up --build -d` — full ML stack |
-| `make down` | Stop all ML containers |
-| `make restart` | `down` then `up` |
-| `make logs` | Follow logs for all ML services |
-| `make logs-price` | Follow price-prediction-service logs only |
-| `make logs-rec` | Follow recommendation-service logs only |
-| `make logs-gateway` | Follow ml-gateway-service logs only |
-| `make logs-agent` | Follow kafka-agent logs only |
+| `make seed` | Seed core DBs with Ugandan farmer/buyer test data |
+| `make ingest-bootstrap` | Pull profiles into ML feature store + reload recommendation-service |
+| `make generate-data` | Generate synthetic price CSVs for model training |
+| `make train` | Train 48 Prophet models → `price-prediction-service/models/` |
 
 ### Testing
 
@@ -643,78 +729,54 @@ All targets run from the project root.
 | `make test-price` | price-prediction-service tests only |
 | `make test-rec` | recommendation-service tests only |
 | `make test-gateway` | ml-gateway-service tests only |
-
-### Health & Smoke
-
-| Command | What it does |
-|---|---|
-| `make health` | `curl` all `/health` endpoints and print results |
-| `make smoke-test` | End-to-end: price prediction + farmer recs + buyer recs |
+| `make health` | Curl all ML `/health` endpoints |
+| `make smoke-test` | Randomised end-to-end: price + farmer recs + buyer recs |
 
 ### Cleanup
 
 | Command | What it does |
 |---|---|
-| `make clean` | Remove `__pycache__`, `.pyc`, venvs, generated CSVs |
-| `make clean-models` | Remove trained `.pkl` model files |
-| `make clean-docker` | `docker-compose down -v --rmi all` — full wipe |
-
----
-
-## Running Tests
-
-### Core stack integration tests
-
-Start the core stack first:
-```bash
-docker compose up --build -d
-```
-
-Then run the integration suite (hits real services, no mocks):
-```bash
-pip install pytest httpx
-pytest tests/integration/ -v
-```
-
-Covers: health checks, auth, user profiles, produce listings, order placement, stock reduction, reviews, recommendation event propagation.
-
-### ML stack unit tests
-
-No Docker required — runs against local code:
-```bash
-make install   # only needed once
-make test
-```
+| `make clean` | Remove `__pycache__`, `.pyc` files, venvs |
+| `make clean-models` | Remove trained `.pkl` files |
+| `make clean-docker` | Full ML docker wipe (`down -v --rmi all`) |
 
 ---
 
 ## Environment Variables
 
-### Core stack (set in `docker-compose.yml`)
+### Core stack (each service has its own `.env`)
 
 | Variable | Services | Description |
 |---|---|---|
 | `DATABASE_URL` | all | PostgreSQL connection string |
-| `RABBITMQ_URL` | all except auth | `amqp://guest:guest@rabbitmq:5672/` |
-| `SECRET_KEY` | auth + JWT-validating services | JWT signing key |
-| `ALGORITHM` | same | `HS256` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | auth | Token lifetime (default 30) |
-| `PRODUCE_SERVICE_URL` | order | `http://produce_service:8003` |
+| `INTERNAL_SECRET` | all | Inter-service auth key (must be `internal-secret` in dev) |
+| `SECRET_KEY` | auth | JWT signing key |
+| `FRONTEND_URL` | auth, payment | Allowed redirect origin |
+| `REDIS_URL` | produce, blog | Shared Redis for caching |
+| `KAFKA_BOOTSTRAP_SERVERS` | order | `kafka:9092` (core stack's Kafka is the ML stack's Kafka) |
+| `KAFKA_TRANSACTION_TOPIC` | order | `soko.transactions` |
 
-### ML stack (template in `services/soko-ml/.env.example`)
+### ML stack (`services/soko-ml/.env.example`)
 
 | Variable | Default | Description |
 |---|---|---|
+| `POSTGRES_USER` | `soko_ml` | ML DB user |
+| `POSTGRES_PASSWORD` | `changeme` | **REQUIRED: change before production** |
 | `REDIS_HOST` | `redis` | ML Redis hostname |
-| `REDIS_PORT` | `6379` | |
-| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | |
-| `MODEL_DIR` | `/app/models` | Path to `.pkl` files inside container |
-| `FARMERS_DATA_PATH` | `/app/data/raw/farmers.csv` | |
-| `BUYERS_DATA_PATH` | `/app/data/raw/buyers.csv` | |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Must match the Kafka started by the ML stack |
+| `USER_SERVICE_URL` | `http://user_service:8002` | Core user service (via soko-ml-bridge) |
+| `ORDER_SERVICE_URL` | `http://order_service:8004` | Core order service (via soko-ml-bridge) |
+| `PRODUCE_SERVICE_URL` | `http://produce_service:8003` | Core produce service (via soko-ml-bridge) |
+| `INTERNAL_API_KEY` | `internal-secret` | **Must match core services' `INTERNAL_SECRET`** |
+| `BOOTSTRAP_ON_STARTUP` | `true` | Pull profiles from user-service at startup |
+| `PROFILE_REFRESH_INTERVAL_SECONDS` | `900` | How often recommendation-service reloads from DB |
 | `PRICE_CACHE_TTL_SECONDS` | `86400` | 24 hours |
 | `REC_CACHE_TTL_SECONDS` | `3600` | 1 hour |
-| `DEFAULT_TOP_N` | `5` | Default recommendation count |
-| `LOG_LEVEL` | `INFO` | `DEBUG` for development |
+| `GATEWAY_PORT` | `8080` | Host port for ML gateway |
+| `REC_SERVICE_PORT` | `8095` | Host port for recommendation-service |
+| `INGEST_SERVICE_PORT` | `8096` | Host port for data-ingestion-service |
+| `LOCATION_SERVICE_PORT` | `8097` | Host port for location-service |
+| `PRICE_SERVICE_PORT` | `8094` | Host port for price-prediction-service |
 
 ---
 
@@ -722,88 +784,184 @@ make test
 
 ```
 soko/
-├── Makefile                          ← All ML commands (run from here)
-├── docker-compose.yml                ← Core Soko stack
+├── Makefile                             ← All stack commands (run from here)
+├── docker-compose.yml                   ← Core Soko stack (9 services + DBs + Redis)
 ├── nginx/
-│   └── nginx.conf                    ← API gateway routing + auth subrequests
+│   └── nginx.conf                       ← API gateway: routing, auth subrequests, CORS
+├── scripts/
+│   ├── seed.py                          ← Seed core DBs with Ugandan test users + listings
+│   └── smoke_test.py                    ← Randomised ML end-to-end test
 ├── services/
-│   ├── auth/                         ← JWT auth, /verify-token
-│   ├── user/                         ← User profiles          :8002
-│   ├── produce/                      ← Listings, stock        :8003
-│   ├── order/                        ← Orders, reviews        :8004
-│   ├── payment/                      ← PesaPal integration    :8005
-│   ├── message/                      ← WebSocket messaging    :8006
-│   ├── notification/                 ← WebSocket push         :8007
-│   ├── blog/                         ← Articles               :8008
-│   ├── ussd/                         ← Feature-phone access   :8009
-│   ├── recommendation/               ← RabbitMQ-driven feed   :8010
-│   └── soko-ml/                      ← ML stack (own compose)
+│   ├── auth/                            ← JWT auth, /verify-token          :8001
+│   │   └── .env
+│   ├── user/                            ← User profiles                    :8002
+│   │   └── .env
+│   ├── produce/                         ← Listings, stock, Cloudinary       :8003
+│   │   └── .env
+│   ├── order/                           ← Orders, Kafka publisher           :8004
+│   │   └── .env
+│   ├── payment/                         ← PesaPal Mobile Money             :8005
+│   │   └── .env
+│   ├── message/                         ← WebSocket messaging               :8006
+│   │   └── .env
+│   ├── notification/                    ← WebSocket push                    :8007
+│   │   └── .env
+│   ├── blog/                            ← Articles, Cloudinary              :8008
+│   │   └── .env
+│   ├── ussd/                            ← Feature-phone USSD handler        :8009
+│   │   └── .env
+│   └── soko-ml/                         ← ML stack (own compose)
 │       ├── docker-compose.yml
-│       ├── docker-compose.dev.yml
-│       ├── .env.example
+│       ├── .env.example                 ← Copy to .env before starting
 │       ├── shared/
-│       │   └── events.py             ← Kafka event dataclasses
-│       ├── price-prediction-service/ ← Prophet + Redis + Kafka :8001
+│       │   └── events.py                ← Kafka event dataclasses
+│       ├── ml-gateway-service/          ← Proxy + circuit breaker  host:8080
+│       │   └── src/
+│       │       ├── main.py              ← FastAPI routes, header forwarding
+│       │       ├── proxy.py             ← Circuit breaker, retries, fallbacks
+│       │       └── logger.py
+│       ├── price-prediction-service/    ← Prophet + Redis          host:8094
 │       │   ├── src/
-│       │   │   ├── main.py
 │       │   │   ├── predictor.py
-│       │   │   ├── cache.py
-│       │   │   ├── kafka_producer.py
-│       │   │   └── schemas.py
-│       │   ├── models/               ← .pkl files (gitignored)
-│       │   └── tests/
-│       ├── recommendation-service/   ← Content scoring + Redis :8002
-│       │   ├── src/
-│       │   │   ├── main.py
-│       │   │   ├── recommender.py
-│       │   │   ├── interaction_store.py
-│       │   │   ├── cache.py
-│       │   │   ├── kafka_consumer.py
-│       │   │   └── schemas.py
-│       │   ├── data/raw/             ← farmers.csv, buyers.csv
-│       │   └── tests/
-│       ├── ml-gateway-service/       ← Proxy + circuit breaker :8000
-│       │   ├── src/
-│       │   │   ├── main.py
-│       │   │   ├── proxy.py
-│       │   │   └── logger.py
-│       │   └── tests/
-│       ├── kafka-agent/              ← Event backbone (no HTTP)
-│       │   ├── src/
-│       │   │   ├── agent.py
-│       │   │   ├── consumers/
-│       │   │   ├── producers/
-│       │   │   └── dlq.py
-│       │   └── tests/
-│       └── data-generator/           ← One-shot CSV + model data
-│           ├── generate_prices.py
-│           └── generate_profiles.py
+│       │   │   └── feature_store_client.py
+│       │   └── models/                  ← .pkl files (gitignored, make train)
+│       ├── recommendation-service/      ← Content scoring + Postgres host:8095
+│       │   └── src/
+│       │       ├── main.py              ← Identity validation, /internal/reload
+│       │       ├── recommender.py       ← Scoring algorithm
+│       │       ├── feature_store_client.py
+│       │       ├── interaction_store.py
+│       │       └── kafka_consumer.py
+│       ├── data-ingestion-service/      ← Bootstrap + streaming   host:8096
+│       │   └── src/
+│       │       ├── main.py              ← Bootstrap, reload notification
+│       │       ├── clients/             ← user_client.py, order_client.py
+│       │       ├── transformers/        ← Crop normalisation, price transform
+│       │       ├── bootstrap/           ← Farmers, buyers, orders, markets
+│       │       └── streams/             ← Kafka transaction consumer
+│       ├── location-service/            ← Market routing          host:8097
+│       │   └── src/
+│       │       ├── market_router.py     ← Tier 1/2 routing
+│       │       ├── fallback.py          ← Tier 3 + close_pool
+│       │       └── gap_notifier.py      ← Coverage gap events
+│       ├── kafka-agent/                 ← Event backbone (no HTTP port)
+│       │   └── src/
+│       │       ├── agent.py
+│       │       ├── consumers/           ← Per-topic consumers
+│       │       ├── producers/
+│       │       └── dlq.py
+│       └── db/
+│           └── schema.sql               ← ML feature store DDL
 └── tests/
-    └── integration/                  ← Core stack integration tests
+    └── integration/                     ← Core stack integration tests
 ```
 
-Each core service follows the same internal layout:
-```
-service/
-├── Dockerfile
-├── requirements.txt
-└── app/
-    ├── main.py          ← FastAPI app + lifespan
-    ├── config.py        ← pydantic-settings
-    ├── database.py      ← SQLAlchemy engine
-    ├── dependencies.py  ← JWT auth
-    ├── messaging.py     ← RabbitMQ publisher / consumer
-    ├── schemas.py       ← Pydantic models
-    ├── models/          ← SQLAlchemy ORM
-    └── routers/         ← Route handlers
-```
+---
+
+## Production Bug Report
+
+The following bugs were identified and fixed during the ML integration audit. All fixes are in this codebase.
+
+### SECURITY-01 — `/recommendations/` endpoint bypassed authentication
+
+**Severity:** High  
+**Location:** `nginx/nginx.conf`
+
+The legacy `/recommendations/` route proxied to the ML recommendation service without any `auth_request` call. Any unauthenticated client could retrieve another user's personalised recommendations by guessing their UUID.
+
+**Fix:** Added `auth_request /_verify_token` with `X-User-Id` and `X-User-Role` injection, matching the protection on `/ml/recommend/`.
+
+---
+
+### SECURITY-02 — Recommendation service accepted any user ID in path
+
+**Severity:** High  
+**Location:** `services/soko-ml/recommendation-service/src/main.py`
+
+The recommendation endpoints accepted `{buyer_id}` and `{farmer_id}` path parameters without checking whether the requesting user was actually that person. An authenticated attacker could harvest recommendations for any user by iterating through UUIDs.
+
+**Fix:** Added `_check_identity()` — reads `x-user-id` header (injected by Nginx from the JWT), compares it against the path parameter, returns 403 on mismatch. Admin role bypasses the check.
+
+---
+
+### SECURITY-03 — ML Gateway did not forward `X-User-Id` to recommendation service
+
+**Severity:** High (prerequisite for SECURITY-02 fix to function)  
+**Location:** `services/soko-ml/ml-gateway-service/src/main.py` and `src/proxy.py`
+
+The gateway's `recommend_farmers` and `recommend_buyers` handlers did not accept a `Request` object and therefore could not read or forward the `x-user-id` header injected by Nginx. The recommendation service always received requests with no identity header and therefore could never enforce identity.
+
+**Fix:** Both recommendation handlers now accept `request: Request`, extract `x-user-id` and `x-user-role`, and pass them via the new `headers` parameter on `proxy_request()`.
+
+---
+
+### BUG-01 — Wrong default service ports in data-ingestion clients
+
+**Severity:** High (breaks bootstrap on fresh install)  
+**Locations:**
+- `services/soko-ml/data-ingestion-service/src/clients/user_client.py` — default `http://user-service:3003` (should be `8002`)
+- `services/soko-ml/data-ingestion-service/src/clients/order_client.py` — default `http://order-service:3002` (should be `8004`)
+
+These defaults are only used when the env var is not set. If `.env` is missing or incomplete, bootstrap silently fails — no profiles are ingested, recommendations return empty results.
+
+**Fix:** Corrected both defaults to match the actual service ports.
+
+---
+
+### BUG-02 — Swapped ports in `.env.example` and `docker-compose.yml` defaults
+
+**Severity:** Medium  
+**Locations:**
+- `services/soko-ml/.env.example` lines 31–32
+- `services/soko-ml/docker-compose.yml` data-ingestion environment block
+
+`ORDER_SERVICE_URL` defaulted to port `8003` (produce service port) and `PRODUCE_SERVICE_URL` defaulted to port `8004` (order service port). These were swapped.
+
+**Fix:** Corrected to `ORDER_SERVICE_URL=http://order_service:8004` and `PRODUCE_SERVICE_URL=http://produce_service:8003` in both files.
+
+---
+
+### BUG-03 — Recommendation service missing `POSTGRES_DSN` and `INTERNAL_API_KEY` in docker-compose
+
+**Severity:** High  
+**Location:** `services/soko-ml/docker-compose.yml` recommendation-service environment block
+
+The recommendation service loads all profiles from PostgreSQL via `feature_store_client.py`, but `POSTGRES_DSN` was not wired into the container environment. The service would use the hardcoded default DSN string which may not match the actual DB credentials. `INTERNAL_API_KEY` was also missing, meaning the `/internal/reload` endpoint would accept any call without authentication.
+
+**Fix:** Added `POSTGRES_DSN`, `INTERNAL_API_KEY`, `PROFILE_REFRESH_INTERVAL_SECONDS` to the recommendation-service environment. Added `soko-ml-db` to its `depends_on`.
+
+---
+
+### BUG-04 — New users waited up to 15 minutes to appear in recommendations
+
+**Severity:** Medium  
+**Location:** `services/soko-ml/recommendation-service/src/main.py`
+
+The recommendation service reloads profiles from the ML feature store on a 15-minute timer (`PROFILE_REFRESH_INTERVAL_SECONDS=900`). After `make seed` or `POST /bootstrap`, newly registered users would not appear in recommendations for up to 15 minutes.
+
+**Fix:** Added `POST /internal/reload` endpoint to the recommendation service. Data-ingestion now calls this endpoint immediately after each successful bootstrap (both at startup and on manual trigger), reducing the lag from up to 15 minutes to under 10 seconds.
+
+---
+
+### What to watch in production
+
+| Risk | Mitigation |
+|---|---|
+| `INTERNAL_SECRET` / `INTERNAL_API_KEY` mismatch | Keep in a shared secrets manager; both must be identical |
+| Feature store staleness | Monitor `GET /ingest/bootstrap/status`; set up an alert if `farmers_ingested = 0` |
+| Kafka consumer lag | Monitor `soko.transactions` consumer group `soko-ml-price-collector` lag |
+| Recommendation cache too aggressive | Tune `REC_CACHE_TTL_SECONDS` down if personalisation feels stale |
+| Coverage gaps accumulating | Monitor `GET /gaps/summary`; high-frequency gaps signal unmet demand |
+| Prophet model staleness | Re-run `make train` as price observations accumulate (>52 per market-crop pair triggers `is_model_ready`) |
 
 ---
 
 ## Known Limitations
 
-- **Alembic not wired** — schema changes require dropping the affected DB volume
-- **Shared JWT secret** — all services share one key; use a secrets manager in production
-- **`/listings/{id}/reduce-stock` is unauthenticated** — secure with an internal API key in production
-- **No password reset** — requires an email provider
-- **ML stack is a separate compose** — it does not share the core stack's network or Redis; the two stacks communicate over localhost ports in development and would use a shared Docker network or service mesh in production
+- **Alembic not wired** — schema changes to either stack require dropping the affected DB volume
+- **Shared JWT secret** — all core services share one key; use a secrets manager in production
+- **Order service `/internal/orders` endpoint not implemented** — data-ingestion bootstrap skips order history and relies on live Kafka streaming for price observations instead; price models need real transaction volume before achieving 52-observation model readiness
+- **Interaction boosts are in-memory only** — the `InteractionStore` in the recommendation service is not persisted; a service restart resets all boost scores (they rebuild from `soko.interactions` with `auto.offset.reset=latest`, so only future events contribute)
+- **Single Kafka broker** — `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1` is not suitable for production; deploy a 3-broker cluster with replication factor 3
+- **No password reset** — requires an outbound email provider
+- **Google Maps API optional** — location-service falls back to Haversine straight-line distances when `GOOGLE_MAPS_API_KEY` is empty; transport cost estimates will be less accurate

@@ -99,6 +99,7 @@ async def proxy_request(
     url: str,
     json_body: Optional[dict] = None,
     params: Optional[dict] = None,
+    headers: Optional[dict] = None,
 ) -> tuple[dict, int]:
     """
     Proxy a request with retries and circuit breaker protection.
@@ -115,9 +116,9 @@ async def proxy_request(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             if method.upper() == "POST":
-                resp = await client.post(url, json=json_body, timeout=REQUEST_TIMEOUT_SECONDS)
+                resp = await client.post(url, json=json_body, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
             else:
-                resp = await client.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+                resp = await client.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
 
             if resp.status_code < 500:
                 breaker.record_success()

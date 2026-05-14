@@ -195,21 +195,22 @@ services:
     ports:
       - "${REC_SERVICE_PORT:-8095}:8002"
     environment:
+      - POSTGRES_DSN=postgresql://${POSTGRES_USER:-soko_ml}:${POSTGRES_PASSWORD:-changeme}@soko-ml-db:5432/soko_ml_db
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_DB=${REDIS_DB:-0}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
       - KAFKA_INTERACTION_TOPIC=${KAFKA_INTERACTION_TOPIC:-soko.interactions}
-      - FARMERS_DATA_PATH=${FARMERS_DATA_PATH:-/app/data/raw/farmers.csv}
-      - BUYERS_DATA_PATH=${BUYERS_DATA_PATH:-/app/data/raw/buyers.csv}
       - REC_CACHE_TTL_SECONDS=${REC_CACHE_TTL_SECONDS:-3600}
       - DEFAULT_TOP_N=${DEFAULT_TOP_N:-5}
+      - PROFILE_REFRESH_INTERVAL_SECONDS=${PROFILE_REFRESH_INTERVAL_SECONDS:-900}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-internal-secret}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SERVICE_NAME=recommendation-service
-    volumes:
-      - ./recommendation-service/data:/app/data:ro
     depends_on:
+      soko-ml-db:
+        condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
@@ -276,9 +277,10 @@ services:
       - KAFKA_TRANSACTION_TOPIC=${KAFKA_TRANSACTION_TOPIC:-soko.transactions}
       - KAFKA_ML_EVENTS_TOPIC=${KAFKA_ML_EVENTS_TOPIC:-soko.ml.events}
       - KAFKA_GAPS_TOPIC=${KAFKA_GAPS_TOPIC:-soko.gaps}
-      - USER_SERVICE_URL=${USER_SERVICE_URL:-http://user-service:8002}
-      - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order-service:8003}
-      - PRODUCE_SERVICE_URL=${PRODUCE_SERVICE_URL:-http://produce-service:8004}
+      - USER_SERVICE_URL=${USER_SERVICE_URL:-http://user_service:8002}
+      - ORDER_SERVICE_URL=${ORDER_SERVICE_URL:-http://order_service:8004}
+      - PRODUCE_SERVICE_URL=${PRODUCE_SERVICE_URL:-http://produce_service:8003}
+      - REC_SERVICE_URL=http://recommendation-service:8002
       - INTERNAL_API_KEY=${INTERNAL_API_KEY:-internal-secret}
       - BOOTSTRAP_ON_STARTUP=${BOOTSTRAP_ON_STARTUP:-true}
       - MIN_OBSERVATIONS_FOR_MODEL=${MIN_OBSERVATIONS_FOR_MODEL:-30}

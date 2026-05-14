@@ -10,7 +10,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://order-service:3002")
+ORDER_SERVICE_URL = os.getenv("ORDER_SERVICE_URL", "http://order-service:8004")
 INTERNAL_API_KEY  = os.getenv("INTERNAL_API_KEY", "")
 PAGE_LIMIT = 100
 

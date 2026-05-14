@@ -507,16 +507,12 @@ health:
 	@echo "=== Data Ingestion Service ===" && \
 	  curl -sf http://localhost:8096/health | python3 -m json.tool || echo "UNREACHABLE"
 
+seed:
+	@echo "Seeding Ugandan dummy data into all service databases..."
+	@python3 scripts/seed.py
+
 smoke-test:
-	@echo "=== Smoke: Price Prediction ==="
-	@curl -sf -X POST http://localhost:8080/price/predict \
-	  -H 'Content-Type: application/json' \
-	  -d '{"market":"Kisenyi_Kampala","crop":"maize_grain","weeks_ahead":4}' \
-	  | python3 -m json.tool
-	@echo "=== Smoke: Farmers for Buyer ==="
-	@curl -sf "http://localhost:8080/recommend/farmers-for-buyer/B0001?top_n=3" | python3 -m json.tool
-	@echo "=== Smoke: Buyers for Farmer ==="
-	@curl -sf "http://localhost:8080/recommend/buyers-for-farmer/F0001?top_n=3" | python3 -m json.tool
+	@python3 scripts/smoke_test.py
 
 smoke-route:
 	@echo "=== Smoke: Market Route (farmer sell signal) ==="

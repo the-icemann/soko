@@ -92,18 +92,38 @@ async def price_crops():
 
 
 @app.get("/recommend/farmers-for-buyer/{buyer_id}")
-async def recommend_farmers(buyer_id: str, top_n: int = Query(default=5, ge=1, le=50)):
+async def recommend_farmers(
+    buyer_id: str,
+    request: Request,
+    top_n: int = Query(default=5, ge=1, le=50),
+):
     client: httpx.AsyncClient = app.state.http_client
     url = f"{REC_SERVICE_URL}/recommend/farmers-for-buyer/{buyer_id}"
-    result, status = await proxy_request(client, "GET", url, params={"top_n": top_n})
+    forwarded = {
+        k: v for k, v in [
+            ("x-user-id",   request.headers.get("x-user-id")),
+            ("x-user-role", request.headers.get("x-user-role")),
+        ] if v
+    }
+    result, status = await proxy_request(client, "GET", url, params={"top_n": top_n}, headers=forwarded or None)
     return JSONResponse(content=result, status_code=status)
 
 
 @app.get("/recommend/buyers-for-farmer/{farmer_id}")
-async def recommend_buyers(farmer_id: str, top_n: int = Query(default=5, ge=1, le=50)):
+async def recommend_buyers(
+    farmer_id: str,
+    request: Request,
+    top_n: int = Query(default=5, ge=1, le=50),
+):
     client: httpx.AsyncClient = app.state.http_client
     url = f"{REC_SERVICE_URL}/recommend/buyers-for-farmer/{farmer_id}"
-    result, status = await proxy_request(client, "GET", url, params={"top_n": top_n})
+    forwarded = {
+        k: v for k, v in [
+            ("x-user-id",   request.headers.get("x-user-id")),
+            ("x-user-role", request.headers.get("x-user-role")),
+        ] if v
+    }
+    result, status = await proxy_request(client, "GET", url, params={"top_n": top_n}, headers=forwarded or None)
     return JSONResponse(content=result, status_code=status)
 
 

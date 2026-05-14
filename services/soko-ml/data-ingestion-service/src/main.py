@@ -12,6 +12,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import httpx
 import structlog
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
@@ -30,8 +31,26 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-BOOTSTRAP_ON_STARTUP = os.getenv("BOOTSTRAP_ON_STARTUP", "true").lower() == "true"
-SERVICE_NAME         = os.getenv("SERVICE_NAME", "data-ingestion-service")
+BOOTSTRAP_ON_STARTUP  = os.getenv("BOOTSTRAP_ON_STARTUP", "true").lower() == "true"
+SERVICE_NAME          = os.getenv("SERVICE_NAME", "data-ingestion-service")
+INTERNAL_API_KEY      = os.getenv("INTERNAL_API_KEY", "")
+REC_SERVICE_URL       = os.getenv("REC_SERVICE_URL", "http://recommendation-service:8002")
+
+
+async def _notify_recommendation_reload() -> None:
+    """Pings the recommendation service to reload profiles immediately after bootstrap."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{REC_SERVICE_URL}/internal/reload",
+                headers={"x-internal-secret": INTERNAL_API_KEY},
+            )
+        if resp.status_code == 200:
+            log.info("recommendation_reload_triggered", result=resp.json())
+        else:
+            log.warning("recommendation_reload_non_200", status=resp.status_code)
+    except Exception as exc:
+        log.warning(f"recommendation_reload_failed: {exc}")
 
 _stream: TransactionStream | None = None
 _bootstrap_lock = asyncio.Lock()
@@ -67,6 +86,7 @@ async def lifespan(app: FastAPI):
                 try:
                     result = await _run_bootstrap()
                     log.info("bootstrap_complete", **result)
+                    await _notify_recommendation_reload()
                 except Exception as exc:
                     log.error(f"bootstrap_failed: {exc}")
             else:
@@ -104,6 +124,7 @@ async def trigger_bootstrap(background_tasks: BackgroundTasks):
             log.info("manual_bootstrap_triggered")
             result = await _run_bootstrap()
             log.info("manual_bootstrap_complete", **result)
+            await _notify_recommendation_reload()
 
     background_tasks.add_task(_do_bootstrap)
     return {"message": "Bootstrap triggered — running in background"}
