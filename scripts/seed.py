@@ -18,15 +18,167 @@ import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import requests
 
 AUTH     = "http://localhost:8001"
 USER     = "http://localhost:8002"
 PRODUCE  = "http://localhost:8003"
+ORDER    = "http://localhost:8004"
+MESSAGE  = "http://localhost:8006"
+BLOG     = "http://localhost:8008"
 INGEST   = "http://localhost:8096"
 
-PASS = "Soko2024!"
+PASS         = "Soko2024!"
+DELIVERY_FEE = 5000   # UGX, matches order service constant
+MANIFEST     = Path(__file__).parent / ".seed_manifest.json"
+
+# ── Delivery addresses by district ───────────────────────────────────────────
+DELIVERY_ADDR = {
+    "Kampala": {"district": "Kampala", "subCounty": "Kawempe",  "village": "Bwaise"},
+    "Mbarara": {"district": "Mbarara", "subCounty": "Kakoba",   "village": "Rutooma"},
+    "Gulu":    {"district": "Gulu",    "subCounty": "Bardege",  "village": "Layibi"},
+    "Masaka":  {"district": "Masaka",  "subCounty": "Kimaanya", "village": "Bukakata"},
+    "Mbale":   {"district": "Mbale",   "subCounty": "Wanale",   "village": "Nakaloke"},
+    "Lira":    {"district": "Lira",    "subCounty": "Adyel",    "village": "Ojwina"},
+}
+
+# ── Order pairs: (buyer_index, listing_index)  ───────────────────────────────
+# listing_index corresponds to the order listings are created: farmers in order
+# of FARMERS list then EXTRA_FARMERS, each with their listings in definition order.
+#
+#  Listing idx → (Farmer, Listing name)
+#   0  → Nakato     → Premium Maize Grain
+#   2  → Ssebuliba  → Irish Potatoes (Desiree)
+#   4  → Okello     → White Sorghum
+#   6  → Nabukeera  → Matoke (Mpologoma)
+#   8  → Mugisha    → Yellow Beans (K132)
+#  10  → Atim       → Finger Millet (Okileng)
+#  12  → Kawesi     → Roma Tomatoes
+#  15  → Nambi      → White Irish Potatoes
+#  18  → Kyomugisha → Cassava Chips (NAADS Grade A)
+#  24  → Waiswa     → Yellow Beans (Bam 1)
+ORDER_PAIRS = [
+    (0, 0),   # Ssali Martin       → Nakato / Premium Maize Grain
+    (1, 2),   # Nansubuga Rachel   → Ssebuliba / Irish Potatoes
+    (2, 4),   # Opio Samuel        → Okello / White Sorghum
+    (3, 6),   # Nakimuli Diana     → Nabukeera / Matoke
+    (4, 8),   # Kiggundu Alex      → Mugisha / Yellow Beans K132
+    (5, 12),  # Katende Brian      → Kawesi / Roma Tomatoes
+    (6, 15),  # Birungi Agnes      → Nambi / White Irish Potatoes
+    (7, 10),  # Odong Charles      → Atim / Finger Millet Okileng
+    (8, 18),  # Nassaka Joyce      → Kyomugisha / Cassava Chips NAADS
+    (9, 24),  # Tumwesige Paul     → Waiswa / Yellow Beans Bam 1
+]
+
+# ── Blog posts authored by seeded farmers ────────────────────────────────────
+BLOG_POSTS = [
+    {
+        "farmer_idx": 0,  # Nakato Aisha
+        "title":   "How I halved my post-harvest losses with a simple solar dryer",
+        "excerpt": "Moisture was destroying 30% of my maize every season. This is the low-cost solar dryer setup that changed everything for my Natete farm.",
+        "category": "Soil & Crops",
+        "tags": ["maize", "post-harvest", "solar-drying", "storage"],
+        "body": [
+            {"type": "heading",   "content": "The problem: moisture ruining stored grain"},
+            {"type": "paragraph", "content": "In Natete, the long rains push humidity above 80% for weeks at a time. Before I built my solar dryer, I was losing almost a third of my maize to mould before it ever reached the market. That loss was silent — it happened slowly inside the bag — so it took me two seasons to measure just how bad it was."},
+            {"type": "heading",   "content": "Building the dryer for under 400,000 UGX"},
+            {"type": "paragraph", "content": "The frame is eucalyptus poles, the drying bed is galvanised wire mesh, and the cover is UV-stabilised polythene sheeting. Total cost was 380,000 UGX for materials. A local welder joined the corners. The dryer sits on raised legs to allow airflow from below, and the cover is angled south-facing to capture maximum sun."},
+            {"type": "quote",     "content": "I went from 30% post-harvest loss to under 5% in one season. The dryer paid for itself before the second harvest.", "attribution": "Nakato Aisha, Natete, Kampala"},
+            {"type": "heading",   "content": "Moisture targets that matter"},
+            {"type": "paragraph", "content": "Maize destined for milling should reach 12–13% moisture. Maize for seed should go even lower — 10–11%. I use a simple grain moisture meter (bought at Owino Market for 45,000 UGX) to check before bagging. Once it is in the bag and sealed, moisture stays stable for up to six months in a cool store."},
+        ],
+    },
+    {
+        "farmer_idx": 1,  # Ssebuliba John
+        "title":   "Desiree vs. Victoria: choosing the right Irish potato variety for Ugandan highlands",
+        "excerpt": "After five seasons of comparative trials on my Rutooma farm, I can tell you which variety outperforms in highland Mbarara soils — and why the answer surprises most buyers.",
+        "category": "Soil & Crops",
+        "tags": ["potatoes", "highland", "mbarara", "varieties"],
+        "body": [
+            {"type": "heading",   "content": "Why variety matters more than fertiliser"},
+            {"type": "paragraph", "content": "Most highland potato farmers in Mbarara default to whatever seed is cheapest at the agro-input shop. I spent five seasons trialling Desiree, Victoria, and Cruza 148 side by side on the same field with the same inputs. The yield gap between the best and worst variety was larger than anything I could achieve by changing fertiliser rates."},
+            {"type": "heading",   "content": "Trial results summary"},
+            {"type": "paragraph", "content": "Desiree consistently delivered 18–22 tonnes per hectare on my clay-loam highland soils. Victoria came in at 14–17 t/ha but showed better late-blight resistance in wet seasons. Cruza 148 was the highest yielder at 24 t/ha but buyers reject it because the skin bruises easily during transport — a serious market problem on Mbarara's rough roads."},
+            {"type": "quote",     "content": "Marketability matters as much as yield. A 24 t/ha crop that arrives bruised earns you less than a 20 t/ha crop that looks perfect.", "attribution": "Ssebuliba John, Rutooma, Mbarara"},
+            {"type": "heading",   "content": "My recommendation"},
+            {"type": "paragraph", "content": "For farmers selling to Kampala wholesalers via Soko, Desiree is the safest choice. It stores well, travels well, and buyers recognise the name. Use Victoria for local markets or if you expect a particularly wet season."},
+        ],
+    },
+    {
+        "farmer_idx": 4,  # Mugisha Robert
+        "title":   "K132 yellow beans: Uganda's most-exported legume and how to grow it right",
+        "excerpt": "K132 commands a 15–20% export premium over other yellow bean varieties. Here is exactly how we grow it on Mt Elgon volcanic soils to meet export grade.",
+        "category": "Business",
+        "tags": ["beans", "export", "k132", "mbale", "quality"],
+        "body": [
+            {"type": "heading",   "content": "What makes K132 export-grade"},
+            {"type": "paragraph", "content": "K132 yellow bean is a climbing variety developed by NARO specifically for Uganda's eastern highlands. Its seed size is large and uniform (above 25g per 100 seeds), its skin is thin enough for quick cooking, and the colour holds after washing — qualities that meet EU and Middle East import standards."},
+            {"type": "heading",   "content": "Soil preparation on Mt Elgon slopes"},
+            {"type": "paragraph", "content": "Our volcanic soils are naturally rich in phosphorus and potassium, which beans love. We add minimal DAP at planting (just 50 kg/ha) and top-dress with CAN at flowering. Over-fertilising with nitrogen suppresses nodule formation — beans fix their own nitrogen if you inoculate the seed with Rhizobium before planting."},
+            {"type": "heading",   "content": "Harvest and grading for export"},
+            {"type": "paragraph", "content": "We harvest at 90% pod-yellowing and thresh within 48 hours to avoid discolouration. After threshing, we winnow, then hand-sort to remove split seeds, discoloured seeds, and any foreign matter. Export buyers use a tolerance of less than 2% defects — we aim for under 0.5% to ensure we pass."},
+            {"type": "quote",     "content": "The 15% export premium over local market price completely justifies the extra grading labour. One day of sorting earns more than two extra bags of lower-grade beans.", "attribution": "Mugisha Robert, Nakaloke, Mbale"},
+        ],
+    },
+    {
+        "farmer_idx": 6,  # Kawesi Peter
+        "title":   "Year-round Roma tomato supply near Kampala: my drip irrigation setup",
+        "excerpt": "Most Kampala-area tomato farmers harvest only twice a year and watch prices crash at peak supply. Drip irrigation and staggered planting changed my business model completely.",
+        "category": "Irrigation",
+        "tags": ["tomatoes", "drip-irrigation", "kampala", "year-round"],
+        "body": [
+            {"type": "heading",   "content": "The seasonal price trap"},
+            {"type": "paragraph", "content": "In Wakiso, the two main rainy seasons flood the market with tomatoes and collapse prices to 600–800 UGX/kg. During dry spells, the same tomatoes fetch 2,500–3,000 UGX/kg. I used to join everyone else at the low-price peak. Now I do the opposite."},
+            {"type": "heading",   "content": "The drip system — cost and setup"},
+            {"type": "paragraph", "content": "I installed a gravity-fed drip system from a 10,000-litre tank elevated 3 metres above the field. Total cost was 2.8 million UGX for 0.4 hectares. Drip lines run every 60 cm, emitters every 30 cm. The tank fills from a borehole with a solar pump — 120,000 UGX for the pump, 400,000 UGX for the borehole contribution. I share the borehole with three neighbours."},
+            {"type": "heading",   "content": "Staggered planting for stable income"},
+            {"type": "paragraph", "content": "I plant four batches per year, eight weeks apart. At any given time, one batch is flowering, one is fruiting, one is being harvested, and one is just transplanted. Total annual harvest is about 18 tonnes from 0.4 ha. I sell to processors and supermarkets on monthly contracts — the consistent supply is what earns the contract."},
+            {"type": "quote",     "content": "Consistent supply is worth more than maximum yield. My buyers pay 1,800–2,200 UGX/kg year-round on a contract. That beats the lottery of seasonal prices.", "attribution": "Kawesi Peter, Wakiso, Kampala"},
+        ],
+    },
+]
+
+# ── Conversation scripts (buyer messages farmer, farmer replies) ──────────────
+CONV_SCRIPTS = [
+    # (order_pair_index, buyer_opening, farmer_reply)
+    (0, "Hello Nakato, I just placed an order for your Premium Maize Grain. Is it current-season stock? I need it for milling so moisture is important.",
+        "Hello! Yes, this is from the April 2026 harvest, solar-dried to 12% moisture. I can confirm the grade before dispatch if you send me your lab's requirements."),
+    (1, "Hi, I ordered the Desiree potatoes. Can they be delivered to Kakoba? We need them by Friday for our restaurant.",
+        "Hello! Kakoba is no problem. I usually deliver Mbarara town every Tuesday and Friday. Friday works perfectly — I will add your address to the route."),
+    (2, "Okello, I need the white sorghum for malting. Is it the low-tannin variety suitable for beer? Can you do a 200 kg order next time?",
+        "Yes, this is specifically the low-tannin white sorghum — ideal for malting and brewing. 200 kg is fine, I have plenty in stock. Just place the order when you are ready."),
+    (3, "Hi Nabukeera, your Matoke Mpologoma looked great in the photos. How green are they right now? I need them to ripen by Sunday.",
+        "Hello! The bunches I am harvesting this week are at full green — they will ripen naturally in 3 days at room temperature, so ordering today gets you Sunday-ripe matoke. Perfect timing."),
+    (4, "Mugisha, I am interested in the K132 yellow beans for export. What is your grading standard and can you do a certificate of analysis?",
+        "Hello! We grade to below 0.5% defects — better than the 2% export tolerance. I can provide a lab certificate from the Mbale NARO office if you need it for your buyer's requirements."),
+    (5, "Hi Kawesi, I run a restaurant in Kampala. Do you supply Roma tomatoes on a weekly basis? We need about 30 kg every Monday.",
+        "Hello! Yes, weekly supply is exactly what we do. I supply on Monday and Thursday mornings. 30 kg weekly is manageable — let us agree on a monthly contract and I will give you a stable price of 1,800 UGX/kg."),
+    (6, "Nambi, I need the white Irish potatoes for my hotel kitchen. How consistent is the sizing? We need 60–80g tubers.",
+        "Hello! Our Mbarara highland potatoes are graded before dispatch. The white variety comes out 60–80g very consistently — this is what the hotels in Mbarara already specify from us. I will set aside a hotel-grade batch for your next order."),
+    (7, "Atim, is the Okileng millet traditional-variety or improved? My buyer specifically wants traditional Acholi millet for authenticity.",
+        "Hello! Okileng is 100% traditional Acholi millet — no hybrid, no improved variety. We have maintained the same seed stock for 20 years. Your buyer will not find more authentic millet than this."),
+    (8, "Kyomugisha, the NAADS Cassava Chips — are they free from aflatoxin? I need a safety certificate for my export shipment.",
+        "Hello! All our cassava chips are processed under the NAADS quality programme. I can provide the NAADS inspection certificate and the moisture test result. Aflatoxin testing can be arranged at the Masaka district lab if your buyer requires it."),
+    (9, "Waiswa, I am looking for Bam 1 yellow beans for a local buyer. What is the minimum I can order and how soon can you deliver?",
+        "Hello! Minimum order is 50 kg as listed. I deliver to Mbale town twice a week — Tuesday and Saturday. Place the order today and I will include you on Saturday's delivery run."),
+]
+
+# ── Product review data ───────────────────────────────────────────────────────
+REVIEWS = [
+    # (order_pair_index, rating, body)
+    (0, 5, "Excellent maize — 12% moisture as stated, uniform grain size, and the solar drying shows in how clean and dry it arrived. Milled perfectly with zero rejects."),
+    (1, 5, "Desiree potatoes were exactly as described: consistent 60–80g sizing, clean skin, no bruising despite the Mbarara road. Restaurant customers loved the taste."),
+    (2, 4, "Good quality white sorghum, low tannin as described. One bag had slightly uneven drying but overall very acceptable for malting. Will reorder."),
+    (3, 5, "Mpologoma matoke arrived at perfect green stage and ripened beautifully in three days. Large bunches, firm flesh, great flavour. Buying again."),
+    (4, 5, "K132 yellow beans are exceptional — uniform large seed, clean grade, minimal defects. Our export buyer passed them first inspection. Mugisha is now our primary bean supplier."),
+    (5, 4, "Roma tomatoes were firm and fresh. One crate had a few over-ripe tomatoes at the bottom but Kawesi resolved it immediately with a replacement. Good supplier."),
+    (6, 5, "White Irish potatoes are exactly hotel grade — 60–80g, consistent, no greening. Delivered on time as promised. Signed a monthly supply contract."),
+    (7, 5, "Traditional Okileng millet is exactly what we needed. Our brewery buyer confirmed authenticity and placed a standing order. Atim is reliable and honest."),
+    (8, 5, "NAADS Grade A cassava chips arrived with all certificates. Perfect 14% moisture, no mould, no aflatoxin. Export shipment cleared customs first attempt."),
+    (9, 4, "Good Bam 1 beans. Grading was mostly clean though a few split seeds in one bag. Delivery was punctual. Would order again with a note about the split seeds."),
+]
 
 # ── Farmer data ───────────────────────────────────────────────────────────────
 
@@ -620,19 +772,218 @@ def create_listings(farmers: list) -> list:
             ok(f"  Publish: {listing_data['name']}", resp)
 
             all_listings.append({
-                "id":       listing_id,
-                "name":     listing_data["name"],
-                "farmer":   f["fullName"],
-                "district": listing_data["district"],
+                "id":           listing_id,
+                "name":         listing_data["name"],
+                "farmer":       f["fullName"],
+                "farmer_id":    f["id"],
+                "district":     listing_data["district"],
+                "price":        listing_data["price"],
+                "minimumOrder": listing_data.get("minimumOrder", 50),
+                "unit":         listing_data.get("unit", "kg"),
             })
 
     return all_listings
 
 
-# ── Phase 4: Trigger ML bootstrap ────────────────────────────────────────────
+# ── Phase 4: Place orders ────────────────────────────────────────────────────
+
+def place_orders(buyers: list, listings: list) -> list:
+    print("\n── Phase 4: Placing orders (cash on delivery) ──────────────────")
+    order_ids = []
+
+    for buyer_idx, listing_idx in ORDER_PAIRS:
+        if buyer_idx >= len(buyers) or listing_idx >= len(listings):
+            print(f"  SKIP index out of range: buyer={buyer_idx} listing={listing_idx}")
+            continue
+
+        b       = buyers[buyer_idx]
+        listing = listings[listing_idx]
+        qty     = listing["minimumOrder"]
+        price   = listing["price"]
+        subtotal = qty * price
+        total   = subtotal + DELIVERY_FEE
+
+        addr_template = DELIVERY_ADDR.get(
+            b["district"],
+            {"district": b["district"], "subCounty": "Central", "village": "Town Centre"},
+        )
+
+        payload = {
+            "items": [{
+                "productId": listing["id"],
+                "quantity":  qty,
+                "unitPrice": price,
+                "subtotal":  subtotal,
+            }],
+            "deliveryAddress": {
+                "fullName":  b["fullName"],
+                "phone":     b["phone"],
+                "district":  addr_template["district"],
+                "subCounty": addr_template["subCounty"],
+                "village":   addr_template["village"],
+                "landmark":  f"Near {addr_template['subCounty']} market",
+            },
+            "paymentMethod": {"type": "cash_on_delivery"},
+            "totalAmount":   total,
+            "currency":      "UGX",
+        }
+
+        resp = requests.post(
+            f"{ORDER}/orders/",
+            json=payload,
+            headers=buyer_headers(b["id"]),
+        )
+        if not resp.ok:
+            print(f"  ✗ Order {b['fullName']} → {listing['name']}: {resp.status_code} — {resp.text[:120]}")
+            continue
+
+        order_id = resp.json().get("id") or resp.json().get("orderId", "")
+        order_ids.append(order_id)
+        print(f"  ✓ Order: {b['fullName']:<22} → {listing['name']:<30} ({qty} {listing['unit']} × {price:,} UGX)")
+
+    print(f"  {len(order_ids)} order(s) created.")
+    return order_ids
+
+
+# ── Phase 5: Start conversations + replies ────────────────────────────────────
+
+def create_conversations(buyers: list, listings: list) -> None:
+    print("\n── Phase 5: Creating buyer–farmer conversations ─────────────────")
+
+    for script_idx, buyer_msg, farmer_reply in CONV_SCRIPTS:
+        if script_idx >= len(ORDER_PAIRS):
+            continue
+        buyer_idx, listing_idx = ORDER_PAIRS[script_idx]
+        if buyer_idx >= len(buyers) or listing_idx >= len(listings):
+            continue
+
+        b       = buyers[buyer_idx]
+        listing = listings[listing_idx]
+
+        # Buyer opens conversation
+        resp = requests.post(
+            f"{MESSAGE}/conversations",
+            json={
+                "farmer_id":     listing["farmer_id"],
+                "listing_id":    listing["id"],
+                "first_message": buyer_msg,
+            },
+            headers=buyer_headers(b["id"]),
+        )
+        if not resp.ok:
+            print(f"  ✗ Conv start {b['fullName']} → {listing['farmer']}: {resp.status_code}")
+            continue
+
+        data = resp.json()
+        conv_id = data.get("conversation", {}).get("id") or data.get("id", "")
+
+        # Farmer replies
+        if conv_id:
+            resp2 = requests.post(
+                f"{MESSAGE}/conversations/{conv_id}/messages",
+                json={"body": farmer_reply},
+                headers=farmer_headers(listing["farmer_id"]),
+            )
+            if resp2.ok:
+                print(f"  ✓ Conv: {b['fullName']:<22} ↔ {listing['farmer']}")
+            else:
+                print(f"  ~ Conv opened but reply failed: {resp2.status_code}")
+        else:
+            print(f"  ~ Conv opened (no conv_id in response to reply)")
+
+
+# ── Phase 6: Blog posts ───────────────────────────────────────────────────────
+
+def create_blog_posts(farmers: list) -> None:
+    print("\n── Phase 6: Publishing farmer blog posts ────────────────────────")
+
+    all_farmers = farmers  # same order as FARMERS + EXTRA_FARMERS
+    for post_def in BLOG_POSTS:
+        idx = post_def["farmer_idx"]
+        if idx >= len(all_farmers):
+            print(f"  SKIP blog post (farmer_idx {idx} out of range)")
+            continue
+
+        f = all_farmers[idx]
+        payload = {
+            "title":    post_def["title"],
+            "excerpt":  post_def["excerpt"],
+            "image":    "https://images.unsplash.com/photo-1628352081506-83c43123a6b9?w=800",
+            "category": post_def["category"],
+            "tags":     post_def["tags"],
+            "body":     post_def["body"],
+        }
+
+        resp = requests.post(
+            f"{BLOG}/posts/",
+            json=payload,
+            headers=farmer_headers(f["id"]),
+        )
+        if not resp.ok:
+            print(f"  ✗ Blog post '{post_def['title'][:50]}': {resp.status_code} — {resp.text[:120]}")
+            continue
+
+        post_id = resp.json().get("id", "")
+
+        # Publish the draft
+        resp2 = requests.post(
+            f"{BLOG}/posts/{post_id}/publish",
+            headers=farmer_headers(f["id"]),
+        )
+        if resp2.ok:
+            print(f"  ✓ Published: '{post_def['title'][:55]}'  ({f['fullName']})")
+        else:
+            print(f"  ~ Draft created but publish failed: {resp2.status_code}")
+
+
+# ── Phase 7: Product reviews ──────────────────────────────────────────────────
+
+def create_reviews(buyers: list, listings: list) -> None:
+    print("\n── Phase 7: Adding product reviews ─────────────────────────────")
+
+    for pair_idx, rating, body in REVIEWS:
+        if pair_idx >= len(ORDER_PAIRS):
+            continue
+        buyer_idx, listing_idx = ORDER_PAIRS[pair_idx]
+        if buyer_idx >= len(buyers) or listing_idx >= len(listings):
+            continue
+
+        b       = buyers[buyer_idx]
+        listing = listings[listing_idx]
+
+        resp = requests.post(
+            f"{PRODUCE}/listings/{listing['id']}/reviews",
+            json={"rating": rating, "body": body},
+            headers={
+                **buyer_headers(b["id"]),
+                "X-User-Name": b["fullName"],
+            },
+        )
+        if resp.ok:
+            print(f"  ✓ Review ({rating}★): {b['fullName']:<22} → {listing['name']}")
+        elif resp.status_code == 409:
+            print(f"  ~ Already reviewed: {b['fullName']} → {listing['name']}")
+        else:
+            print(f"  ✗ Review failed {b['fullName']} → {listing['name']}: {resp.status_code} — {resp.text[:100]}")
+
+
+# ── Write seed manifest ───────────────────────────────────────────────────────
+
+def write_manifest(farmers: list, buyers: list, listings: list, order_ids: list) -> None:
+    manifest = {
+        "farmers":    [{"id": f["id"], "name": f["fullName"], "email": f["email"]} for f in farmers],
+        "buyers":     [{"id": b["id"], "name": b["fullName"], "email": b["email"]} for b in buyers],
+        "listing_ids": [l["id"] for l in listings],
+        "order_ids":   order_ids,
+    }
+    MANIFEST.write_text(json.dumps(manifest, indent=2))
+    print(f"\n  Manifest written → {MANIFEST.name}")
+
+
+# ── Phase 8: Trigger ML bootstrap ────────────────────────────────────────────
 
 def trigger_bootstrap():
-    print("\n── Phase 4: Triggering data-ingestion bootstrap ────────────────")
+    print("\n── Phase 8: Triggering data-ingestion bootstrap ────────────────")
     resp = requests.post(f"{INGEST}/bootstrap")
     ok("Bootstrap triggered", resp)
     print("  Waiting 15s for bootstrap to complete...")
@@ -648,10 +999,10 @@ def trigger_bootstrap():
         print(f"  coverage_pairs   : {s['coverage_pairs']}")
 
 
-# ── Phase 5: Restart recommendation service ───────────────────────────────────
+# ── Phase 9: Restart recommendation service ───────────────────────────────────
 
 def reload_recommendation_service():
-    print("\n── Phase 5: Reloading recommendation service ───────────────────")
+    print("\n── Phase 9: Reloading recommendation service ───────────────────")
     subprocess.run(
         ["docker", "compose", "restart", "recommendation-service"],
         cwd="/home/the-icemann/Documents/soko/services/soko-ml",
@@ -669,10 +1020,10 @@ def reload_recommendation_service():
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-def print_summary(farmers: list, buyers: list, listings: list):
-    print("\n" + "═" * 60)
-    print("SEED COMPLETE — copy these IDs for smoke tests")
-    print("═" * 60)
+def print_summary(farmers: list, buyers: list, listings: list, order_ids: list):
+    print("\n" + "═" * 68)
+    print("SEED COMPLETE")
+    print("═" * 68)
 
     print(f"\nFarmers ({len(farmers)}):")
     for f in farmers:
@@ -686,13 +1037,19 @@ def print_summary(farmers: list, buyers: list, listings: list):
     for l in listings:
         print(f"  {l['id']}  {l['name']:<35} {l['farmer']}")
 
-    if farmers:
-        print(f"\nSample smoke-test commands:")
+    print(f"\nOrders placed : {len(order_ids)}")
+
+    if farmers and buyers:
         fid = farmers[0]["id"]
         bid = buyers[0]["id"]
+        print(f"\nSample smoke-test commands:")
         print(f"  curl -s 'http://localhost:8080/recommend/farmers-for-buyer/{bid}?top_n=3' | python3 -m json.tool")
         print(f"  curl -s 'http://localhost:8080/recommend/buyers-for-farmer/{fid}?top_n=3' | python3 -m json.tool")
+        print(f"  curl -s 'http://localhost:8080/price/predict' \\")
+        print(f"       -H 'Content-Type: application/json' \\")
+        print(f"       -d '{{\"crop\":\"maize_grain\",\"market\":\"Kampala\",\"forecast_days\":7}}' | python3 -m json.tool")
 
+    print(f"\n  Run 'make destroy-seed' to undo all of the above.")
     print()
 
 
@@ -703,7 +1060,12 @@ if __name__ == "__main__":
 
     farmers, buyers = register_users()
     update_profiles(farmers)
-    listings = create_listings(farmers)
+    listings        = create_listings(farmers)
+    order_ids       = place_orders(buyers, listings)
+    create_conversations(buyers, listings)
+    create_blog_posts(farmers)
+    create_reviews(buyers, listings)
     trigger_bootstrap()
     reload_recommendation_service()
-    print_summary(farmers, buyers, listings)
+    write_manifest(farmers, buyers, listings, order_ids)
+    print_summary(farmers, buyers, listings, order_ids)

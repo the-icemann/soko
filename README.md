@@ -25,6 +25,7 @@ The platform runs as two independent but integrated Docker Compose stacks:
 12. [Project Structure](#project-structure)
 13. [Production Bug Report](#production-bug-report)
 14. [Known Limitations](#known-limitations)
+15. [Port Reference & Network Isolation](#port-reference--network-isolation)
 
 ---
 
@@ -56,9 +57,10 @@ The platform runs as two independent but integrated Docker Compose stacks:
  └──┬────┬────┬────┬────┬────┬────┬────┬──────────────┬────────────────┘
     │    │    │    │    │    │    │    │              │
     ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼              ▼
-  :8001:8002:8003:8004:8005:8006:8007:8008          ML stack
-  Auth User Prod  Ord  Pay  Msg  Not  Blog  USSD    (see below)
-                                         :8009
+  ── CORE STACK (internal container ports) ──────────────────────────
+  :8001 :8002 :8003 :8004 :8005 :8006 :8007 :8008         ML stack
+  Auth  User  Prod   Ord   Pay   Msg   Not   Blog  USSD   (see below)
+                                                   :8009
 
     Each service owns its own PostgreSQL database.
     Core services share one Redis instance for caching.
@@ -67,7 +69,7 @@ The platform runs as two independent but integrated Docker Compose stacks:
  ┌──────────────────────────────────────────────────────────────────────┐
  │                 ML STACK  (services/soko-ml/)                        │
  │                                                                      │
- │  nginx ──► ml-gateway-service (host :8080 / internal :8000)          │
+ │  nginx ──► ml-gateway-service (container port :8000 → host port :8080) │
  │               │  circuit breakers · request logging · fallbacks      │
  │               ├──► price-prediction-service  (:8001)                 │
  │               │         Prophet .pkl models · Redis 24h cache        │
@@ -96,6 +98,99 @@ The platform runs as two independent but integrated Docker Compose stacks:
 - JWT authentication is enforced at the Nginx gateway via an internal `/_verify_token` subrequest to the auth service. Validated user identity (`X-User-Id`, `X-User-Role`) is injected as headers into every downstream service.
 - The recommendation service enforces that a user can only request recommendations for their own account ID — the JWT-derived `X-User-Id` is compared against the path parameter on every request.
 - The two stacks communicate over the `soko-ml-bridge` Docker network and the `soko.transactions` Kafka topic.
+
+---
+
+## Port Reference & Network Isolation
+
+### Docker Network Topology
+
+Soko runs across three distinct Docker networks to enforce hard isolation boundaries:
+
+| Network | Belongs To | Purpose |
+|---|---|---|
+| `soko_net` | Core stack | Internal mesh for all core services + Nginx |
+| `soko-ml-network` | ML stack | Internal mesh for all ML services |
+| `soko-ml-bridge` | Both stacks | Shared bridge linking Nginx ↔ ml-gateway-service |
+
+```
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │  soko_net (core stack)                                              │
+ │   nginx · auth · user · produce · order · payment                  │
+ │   message · notification · blog · ussd · redis · postgres×9        │
+ └────────────────────────┬────────────────────────────────────────────┘
+                          │ soko-ml-bridge
+ ┌────────────────────────▼────────────────────────────────────────────┐
+ │  soko-ml-network (ML stack)                                         │
+ │   ml-gateway · price-prediction · recommendation · location         │
+ │   data-ingestion · kafka-agent · kafka · zookeeper · redis-ml       │
+ │   soko-ml-db (PostgreSQL feature store)                             │
+ └─────────────────────────────────────────────────────────────────────┘
+```
+
+Core services on `soko_net` **cannot** directly address ML services on `soko-ml-network`. The only cross-stack paths are:
+
+1. `Nginx → ml-gateway-service` over `soko-ml-bridge` (HTTP)
+2. `order-service → Kafka → kafka-agent` over `soko-ml-bridge` (events)
+
+### Complete Port Mapping Table
+
+| Service | Container Port | Host Port | Network | Purpose |
+|---|---|---|---|---|
+| **CORE STACK** | | | | |
+| nginx (API gateway) | 80 | 80 | `soko_net` + `soko-ml-bridge` | All public traffic entry point |
+| auth-service | 8001 | — | `soko_net` | JWT issue & validation |
+| user-service | 8002 | — | `soko_net` | User profiles |
+| produce-service | 8003 | — | `soko_net` | Listings |
+| order-service | 8004 | — | `soko_net` | Order lifecycle + Kafka pub |
+| payment-service | 8005 | — | `soko_net` | PesaPal integration |
+| message-service | 8006 | — | `soko_net` | WebSocket messaging |
+| notification-service | 8007 | — | `soko_net` | WebSocket push |
+| blog-service | 8008 | — | `soko_net` | Blog posts |
+| ussd-service | 8009 | — | `soko_net` | Africa's Talking USSD |
+| core PostgreSQL×9 | 5432 | — | `soko_net` | Per-service databases |
+| core Redis | 6379 | — | `soko_net` | Shared caching |
+| **ML STACK** | | | | |
+| ml-gateway-service | 8000 | **8080** | `soko-ml-network` + `soko-ml-bridge` | ML traffic router, circuit breakers |
+| price-prediction-service | 8001 | 8094 (dev only) | `soko-ml-network` | Prophet forecast models |
+| recommendation-service | 8002 | 8095 (dev only) | `soko-ml-network` | Content scoring + Kafka boosts |
+| location-service | 8003 | 8003 | `soko-ml-network` | Market routing, Haversine |
+| data-ingestion-service | 8004 | 8096 (dev only) | `soko-ml-network` | Feature store bootstrap |
+| **INFRASTRUCTURE (ML stack)** | | | | |
+| Kafka | 9092 | — | `soko-ml-network` | Event broker (internal) |
+| Zookeeper | 2181 | — | `soko-ml-network` | Kafka coordination |
+| ML Redis | 6379 | — | `soko-ml-network` | ML service caching |
+| soko-ml-db (PostgreSQL) | 5432 | — | `soko-ml-network` | ML feature store |
+
+> **Host port vs. container port:** A container port is the port the process listens on *inside* Docker. A host port is what is mapped to your machine. Only explicitly mapped ports are reachable from your host — all others are container-internal only.
+
+### Port Binding Rules
+
+1. **Production** — only Nginx (`:80`) and ml-gateway-service (container `:8000` → host `:8080`) are bound to the host. Every other container port is internal-only.
+2. **Development** — `make dev-price`, `make dev-rec`, `make dev-ingest` bind additional host ports (`:8094`, `:8095`, `:8096`) for local hot-reload. These mappings do not exist in the production Compose file.
+3. **No direct service access** — clients must never call `auth_service:8001` directly; all traffic routes through Nginx or ml-gateway. The port numbers in the architecture diagram are container-internal addresses, not public endpoints.
+
+### Service-to-Service Communication Examples
+
+```bash
+# Nginx → auth-service (internal subrequest for JWT validation)
+nginx → http://auth_service:8001/verify-token
+
+# Nginx → ml-gateway (cross-network via soko-ml-bridge)
+nginx → http://ml-gateway-service:8000/price/predict
+
+# ml-gateway → price-prediction (ML-internal only)
+ml-gateway-service → http://price-prediction-service:8001/predict
+
+# ml-gateway → recommendation (ML-internal only)
+ml-gateway-service → http://recommendation-service:8002/recommend/{user_id}
+
+# data-ingestion → user-service (cross-network via soko-ml-bridge)
+data-ingestion-service → http://user_service:8002/users/farmers
+
+# order-service → Kafka → kafka-agent (event-driven, cross-network)
+order-service publishes to soko.transactions → kafka-agent consumes and boosts
+```
 
 ---
 

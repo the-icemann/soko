@@ -45,6 +45,8 @@ CORE_SERVICES := auth user produce order payment message notification blog ussd
         test test-price test-rec test-gateway test-location test-ingest \
         health smoke-test smoke-route smoke-discover smoke-fallback smoke-tier3 smoke-ingest \
         clean clean-models clean-docker \
+        port-reference \
+        fill-envs seed destroy-seed \
         help
 
 # =============================================================================
@@ -162,6 +164,19 @@ help:
 	@echo "  make clean          Remove Python venvs and cached files"
 	@echo "  make clean-models   Remove trained model .pkl files"
 	@echo "  make clean-docker   Remove all containers, volumes, and images (both stacks)"
+	@echo ""
+	@echo "► REFERENCE"
+	@echo "  ─────────────────────────────────────────────────────────"
+	@echo "  make port-reference Show all container/host port mappings for both stacks"
+	@echo ""
+	@echo "► SEED & DESTROY"
+	@echo "  ─────────────────────────────────────────────────────────"
+	@echo "  make fill-envs      Write consistent dev credentials to all service .env files"
+	@echo "  make seed           fill-envs + populate all services with Ugandan dummy data"
+	@echo "     ↳ Phases: register users → profiles → listings → orders → messages"
+	@echo "     ↳         blog posts → reviews → ML bootstrap → rec-service reload"
+	@echo "  make destroy-seed   Remove all seeded data from every service database"
+	@echo "     ↳ Reads scripts/.seed_manifest.json written by 'make seed'"
 	@echo ""
 
 # =============================================================================
@@ -507,10 +522,6 @@ health:
 	@echo "=== Data Ingestion Service ===" && \
 	  curl -sf http://localhost:8096/health | python3 -m json.tool || echo "UNREACHABLE"
 
-seed:
-	@echo "Seeding Ugandan dummy data into all service databases..."
-	@python3 scripts/seed.py
-
 smoke-test:
 	@python3 scripts/smoke_test.py
 
@@ -568,3 +579,72 @@ clean-docker:
 	$(COMPOSE_ML) down -v --rmi all
 	$(COMPOSE_CORE) down --rmi all
 	@echo "All containers, volumes, and images removed."
+
+# =============================================================================
+# REFERENCE
+# =============================================================================
+
+port-reference:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════════════════════╗"
+	@echo "║              Soko — Port Reference (container → host)               ║"
+	@echo "╚══════════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "► CORE STACK  (network: soko_net — internal container ports only)"
+	@echo "  ─────────────────────────────────────────────────────────────────"
+	@echo "  nginx (API gateway)      container :80    → host :80"
+	@echo "  auth-service             container :8001  → host: NOT EXPOSED"
+	@echo "  user-service             container :8002  → host: NOT EXPOSED"
+	@echo "  produce-service          container :8003  → host: NOT EXPOSED"
+	@echo "  order-service            container :8004  → host: NOT EXPOSED"
+	@echo "  payment-service          container :8005  → host: NOT EXPOSED"
+	@echo "  message-service          container :8006  → host: NOT EXPOSED"
+	@echo "  notification-service     container :8007  → host: NOT EXPOSED"
+	@echo "  blog-service             container :8008  → host: NOT EXPOSED"
+	@echo "  ussd-service             container :8009  → host: NOT EXPOSED"
+	@echo "  core Redis               container :6379  → host: NOT EXPOSED"
+	@echo "  core PostgreSQL ×9       container :5432  → host: NOT EXPOSED"
+	@echo ""
+	@echo "► ML STACK  (network: soko-ml-network; bridge: soko-ml-bridge)"
+	@echo "  ─────────────────────────────────────────────────────────────"
+	@echo "  ml-gateway-service       container :8000  → host :8080  (production)"
+	@echo "  price-prediction-service container :8001  → host :8094  (dev only)"
+	@echo "  recommendation-service   container :8002  → host :8095  (dev only)"
+	@echo "  location-service         container :8003  → host :8003"
+	@echo "  data-ingestion-service   container :8004  → host :8096  (dev only)"
+	@echo ""
+	@echo "► INFRASTRUCTURE  (ML stack — internal only)"
+	@echo "  ─────────────────────────────────────────────────────────────"
+	@echo "  Kafka                    container :9092  → host: NOT EXPOSED"
+	@echo "  Zookeeper                container :2181  → host: NOT EXPOSED"
+	@echo "  ML Redis                 container :6379  → host: NOT EXPOSED"
+	@echo "  soko-ml-db (PostgreSQL)  container :5432  → host: NOT EXPOSED"
+	@echo ""
+	@echo "  NOTE: 'NOT EXPOSED' = reachable only within the Docker network."
+	@echo "        Dev-only ports are mapped by docker-compose.dev.yml / make dev-*."
+	@echo ""
+
+# =============================================================================
+# SEED & DESTROY
+# =============================================================================
+
+fill-envs:
+	@python3 scripts/fill_envs.py
+
+seed: fill-envs
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════════════════════╗"
+	@echo "║                     Soko — Seeding all services                     ║"
+	@echo "╚══════════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@echo "Both stacks must be running: make start"
+	@echo ""
+	@python3 scripts/seed.py
+
+destroy-seed:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════════════════════╗"
+	@echo "║                   Soko — Destroying seed data                       ║"
+	@echo "╚══════════════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@python3 scripts/destroy_seed.py
