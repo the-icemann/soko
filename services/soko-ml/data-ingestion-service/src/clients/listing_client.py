@@ -25,11 +25,11 @@ async def fetch_all_listings() -> AsyncIterator[dict]:
     Produce-service uses /listings not /internal/listings.
     """
     page = 1
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         while True:
             try:
                 resp = await client.get(
-                    f"{LISTING_SERVICE_URL}/listings",
+                    f"{LISTING_SERVICE_URL}/listings/",
                     params={"page": page, "limit": PAGE_LIMIT},
                 )
                 resp.raise_for_status()

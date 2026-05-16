@@ -339,6 +339,10 @@ train:
 	  $(abspath $(PRICE_VENV))/bin/python -c \
 	  "from src.predictor import train_all_models; train_all_models()"
 	@echo "Models trained → $(ML_DIR)/price-prediction-service/models/"
+	@if docker inspect soko-ml-price > /dev/null 2>&1; then \
+	  echo "Restarting price-prediction-service to reload models..."; \
+	  docker restart soko-ml-price; \
+	fi
 
 # =============================================================================
 # ML — DEVELOPMENT (local uvicorn with hot-reload)
@@ -529,28 +533,28 @@ smoke-route:
 	@echo "=== Smoke: Market Route (farmer sell signal) ==="
 	@curl -sf -X POST http://localhost:8080/location/route \
 	  -H 'Content-Type: application/json' \
-	  -d '{"farmer_id":"F0001","crop":"maize_grain","quantity_kg":500,"harvest_month":8}' \
+	  -d '{"farmer_id":"48191d0d-86a0-49e0-90ff-078546060a2e","farmer_lat":0.3476,"farmer_lng":32.5825,"crop":"maize_grain","quantity_kg":500}' \
 	  | python3 -m json.tool
 
 smoke-discover:
 	@echo "=== Smoke: Discover Farmers Near Buyer ==="
 	@curl -sf -X POST http://localhost:8080/location/discover \
 	  -H 'Content-Type: application/json' \
-	  -d '{"buyer_id":"B0001","crop":"maize_grain","max_distance_km":150,"max_price_ugx":2000,"top_n":5}' \
+	  -d '{"buyer_id":"aca85b8c-0be1-48db-831c-359b439783eb","buyer_lat":0.3476,"buyer_lng":32.5825,"crop":"maize_grain","max_distance_km":150,"max_price_ugx":2000,"top_n":5}' \
 	  | python3 -m json.tool
 
 smoke-fallback:
 	@echo "=== Smoke: Tier 2 fallback (sesame seed — limited coverage) ==="
 	@curl -sf -X POST http://localhost:8080/location/route \
 	  -H 'Content-Type: application/json' \
-	  -d '{"farmer_id":"F0001","crop":"sesame","quantity_kg":200,"harvest_month":10}' \
+	  -d '{"farmer_id":"48191d0d-86a0-49e0-90ff-078546060a2e","farmer_lat":0.3476,"farmer_lng":32.5825,"crop":"sesame","quantity_kg":200}' \
 	  | python3 -m json.tool
 
 smoke-tier3:
 	@echo "=== Smoke: Tier 3 unknown crop ==="
 	@curl -sf -X POST http://localhost:8080/location/route \
 	  -H 'Content-Type: application/json' \
-	  -d '{"farmer_id":"F0001","crop":"moringa","quantity_kg":50,"harvest_month":6}' \
+	  -d '{"farmer_id":"48191d0d-86a0-49e0-90ff-078546060a2e","farmer_lat":0.3476,"farmer_lng":32.5825,"crop":"moringa","quantity_kg":50}' \
 	  | python3 -m json.tool
 
 smoke-ingest:
