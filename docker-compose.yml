@@ -69,7 +69,7 @@ services:
     container_name: auth_db
     environment:
       POSTGRES_USER:     auth_user
-      POSTGRES_PASSWORD: auth_pass
+      POSTGRES_PASSWORD: ${AUTH_DB_PASS:-auth_pass}
       POSTGRES_DB:       auth_db
     volumes:
       - auth_db_data:/var/lib/postgresql/data
@@ -88,7 +88,7 @@ services:
       - "127.0.0.1:8001:8001"
     env_file: ./services/auth/.env
     environment:
-      DATABASE_URL:      postgresql://auth_user:auth_pass@auth_db:5432/auth_db
+      DATABASE_URL:      postgresql://auth_user:${AUTH_DB_PASS:-auth_pass}@auth_db:5432/auth_db
       USER_SERVICE_URL:  http://user_service:8002
     depends_on:
       auth_db:
@@ -105,7 +105,7 @@ services:
     container_name: user_db
     environment:
       POSTGRES_USER:     user_user
-      POSTGRES_PASSWORD: user_pass
+      POSTGRES_PASSWORD: ${USER_DB_PASS:-user_pass}
       POSTGRES_DB:       user_db
     volumes:
       - user_db_data:/var/lib/postgresql/data
@@ -124,7 +124,7 @@ services:
       - "127.0.0.1:8002:8002"
     env_file: ./services/user/.env
     environment:
-      DATABASE_URL: postgresql://user_user:user_pass@user_db:5432/user_db
+      DATABASE_URL: postgresql://user_user:${USER_DB_PASS:-user_pass}@user_db:5432/user_db
     depends_on:
       user_db:
         condition: service_healthy
@@ -141,7 +141,7 @@ services:
     container_name: produce_db
     environment:
       POSTGRES_USER:     produce_user
-      POSTGRES_PASSWORD: produce_pass
+      POSTGRES_PASSWORD: ${PRODUCE_DB_PASS:-produce_pass}
       POSTGRES_DB:       produce_db
     volumes:
       - produce_db_data:/var/lib/postgresql/data
@@ -160,7 +160,7 @@ services:
       - "127.0.0.1:8003:8003"
     env_file: ./services/produce/.env
     environment:
-      DATABASE_URL:      postgresql://produce_user:produce_pass@produce_db:5432/produce_db
+      DATABASE_URL:      postgresql://produce_user:${PRODUCE_DB_PASS:-produce_pass}@produce_db:5432/produce_db
       REDIS_URL:         redis://redis:6379/0
       USER_SERVICE_URL:  http://user_service:8002
       ML_GATEWAY_URL:    http://ml-gateway:8000
@@ -182,7 +182,7 @@ services:
     container_name: order_db
     environment:
       POSTGRES_USER:     order_user
-      POSTGRES_PASSWORD: order_pass
+      POSTGRES_PASSWORD: ${ORDER_DB_PASS:-order_pass}
       POSTGRES_DB:       order_db
     volumes:
       - order_db_data:/var/lib/postgresql/data
@@ -201,7 +201,7 @@ services:
       - "127.0.0.1:8004:8004"
     env_file: ./services/order/.env
     environment:
-      DATABASE_URL:              postgresql://order_user:order_pass@order_db:5432/order_db
+      DATABASE_URL:              postgresql://order_user:${ORDER_DB_PASS:-order_pass}@order_db:5432/order_db
       PRODUCE_SERVICE_URL:       http://produce_service:8003
       USER_SERVICE_URL:          http://user_service:8002
       PAYMENT_SERVICE_URL:       http://payment_service:8005
@@ -228,7 +228,7 @@ services:
     container_name: payment_db
     environment:
       POSTGRES_USER:     payment_user
-      POSTGRES_PASSWORD: payment_pass
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASS:-payment_pass}
       POSTGRES_DB:       payment_db
     volumes:
       - payment_db_data:/var/lib/postgresql/data
@@ -247,7 +247,7 @@ services:
       - "127.0.0.1:8005:8005"
     env_file: ./services/payment/.env
     environment:
-      DATABASE_URL:             postgresql://payment_user:payment_pass@payment_db:5432/payment_db
+      DATABASE_URL:             postgresql://payment_user:${PAYMENT_DB_PASS:-payment_pass}@payment_db:5432/payment_db
       ORDER_SERVICE_URL:        http://order_service:8004
       USER_SERVICE_URL:         http://user_service:8002
       NOTIFICATION_SERVICE_URL: http://notification_service:8007
@@ -266,7 +266,7 @@ services:
     container_name: message_db
     environment:
       POSTGRES_USER:     message_user
-      POSTGRES_PASSWORD: message_pass
+      POSTGRES_PASSWORD: ${MESSAGE_DB_PASS:-message_pass}
       POSTGRES_DB:       message_db
     volumes:
       - message_db_data:/var/lib/postgresql/data
@@ -285,7 +285,7 @@ services:
       - "127.0.0.1:8006:8006"
     env_file: ./services/message/.env
     environment:
-      DATABASE_URL:             postgresql://message_user:message_pass@message_db:5432/message_db
+      DATABASE_URL:             postgresql://message_user:${MESSAGE_DB_PASS:-message_pass}@message_db:5432/message_db
       USER_SERVICE_URL:         http://user_service:8002
       PRODUCE_SERVICE_URL:      http://produce_service:8003
       NOTIFICATION_SERVICE_URL: http://notification_service:8007
@@ -304,7 +304,7 @@ services:
     container_name: notification_db
     environment:
       POSTGRES_USER:     notification_user
-      POSTGRES_PASSWORD: notification_pass
+      POSTGRES_PASSWORD: ${NOTIFICATION_DB_PASS:-notification_pass}
       POSTGRES_DB:       notification_db
     volumes:
       - notification_db_data:/var/lib/postgresql/data
@@ -323,13 +323,14 @@ services:
       - "127.0.0.1:8007:8007"
     env_file: ./services/notification/.env
     environment:
-      DATABASE_URL:     postgresql://notification_user:notification_pass@notification_db:5432/notification_db
+      DATABASE_URL:     postgresql://notification_user:${NOTIFICATION_DB_PASS:-notification_pass}@notification_db:5432/notification_db
       USER_SERVICE_URL: http://user_service:8002
     depends_on:
       notification_db:
         condition: service_healthy
     networks:
       - soko_net
+      - soko-ml-bridge
     restart: on-failure
 
   # ─────────────────────────────────────────
@@ -340,7 +341,7 @@ services:
     container_name: blog_db
     environment:
       POSTGRES_USER:     blog_user
-      POSTGRES_PASSWORD: blog_pass
+      POSTGRES_PASSWORD: ${BLOG_DB_PASS:-blog_pass}
       POSTGRES_DB:       blog_db
     volumes:
       - blog_db_data:/var/lib/postgresql/data
@@ -359,7 +360,7 @@ services:
       - "127.0.0.1:8008:8008"
     env_file: ./services/blog/.env
     environment:
-      DATABASE_URL:     postgresql://blog_user:blog_pass@blog_db:5432/blog_db
+      DATABASE_URL:     postgresql://blog_user:${BLOG_DB_PASS:-blog_pass}@blog_db:5432/blog_db
       REDIS_URL:        redis://redis:6379/1
       USER_SERVICE_URL: http://user_service:8002
     depends_on:
@@ -379,7 +380,7 @@ services:
     container_name: ussd_db
     environment:
       POSTGRES_USER:     ussd_user
-      POSTGRES_PASSWORD: ussd_pass
+      POSTGRES_PASSWORD: ${USSD_DB_PASS:-ussd_pass}
       POSTGRES_DB:       ussd_db
     volumes:
       - ussd_db_data:/var/lib/postgresql/data
@@ -398,7 +399,7 @@ services:
       - "127.0.0.1:8009:8009"
     env_file: ./services/ussd/.env
     environment:
-      DATABASE_URL:             postgresql://ussd_user:ussd_pass@ussd_db:5432/ussd_db
+      DATABASE_URL:             postgresql://ussd_user:${USSD_DB_PASS:-ussd_pass}@ussd_db:5432/ussd_db
       PRODUCE_SERVICE_URL:      http://produce_service:8003
       ORDER_SERVICE_URL:        http://order_service:8004
       AUTH_SERVICE_URL:         http://auth_service:8001

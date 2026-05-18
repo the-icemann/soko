@@ -282,6 +282,7 @@ services:
       - PRODUCE_SERVICE_URL=${PRODUCE_SERVICE_URL:-http://produce_service:8003}
       - LISTING_SERVICE_URL=${LISTING_SERVICE_URL:-http://produce_service:8003}
       - REC_SERVICE_URL=http://recommendation-service:8002
+      - NOTIFICATION_SERVICE_URL=http://notification_service:8007
       - INTERNAL_API_KEY=${INTERNAL_API_KEY:-internal-secret}
       - BOOTSTRAP_ON_STARTUP=${BOOTSTRAP_ON_STARTUP:-true}
       - MIN_OBSERVATIONS_FOR_MODEL=${MIN_OBSERVATIONS_FOR_MODEL:-30}

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -95,3 +95,13 @@ class BootstrapStatusResponse(BaseModel):
     orders_ingested: int
     coverage_pairs: int
     already_bootstrapped: bool
+
+
+class UserCreatedPayload(BaseModel):
+    """Sent by user-service after a new account is created."""
+    id:          str
+    role:        str
+    full_name:   str
+    district:    Optional[str]       = None
+    specialties: Optional[List[str]] = None
+    interests:   Optional[List[str]] = None

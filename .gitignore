@@ -94,3 +94,10 @@ erl_crash.dump
 
 # Claude Code
 .claude/
+
+# Terraform
+infrastructure/.terraform/
+infrastructure/terraform.tfvars
+infrastructure/*.tfstate
+infrastructure/*.tfstate.backup
+infrastructure/.terraform.lock.hcl

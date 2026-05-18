@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from .feature_store import get_pool, close_pool, is_bootstrap_needed, get_all_coverage, get_gap_summary
 from .health import full_health_check
-from .schemas import BootstrapStatusResponse, IngestOrderEventPayload
+from .schemas import BootstrapStatusResponse, IngestOrderEventPayload, UserCreatedPayload
 from .streams.transaction_stream import TransactionStream
 
 structlog.configure(
@@ -31,10 +31,11 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-BOOTSTRAP_ON_STARTUP  = os.getenv("BOOTSTRAP_ON_STARTUP", "true").lower() == "true"
-SERVICE_NAME          = os.getenv("SERVICE_NAME", "data-ingestion-service")
-INTERNAL_API_KEY      = os.getenv("INTERNAL_API_KEY", "")
-REC_SERVICE_URL       = os.getenv("REC_SERVICE_URL", "http://recommendation-service:8002")
+BOOTSTRAP_ON_STARTUP      = os.getenv("BOOTSTRAP_ON_STARTUP", "true").lower() == "true"
+SERVICE_NAME              = os.getenv("SERVICE_NAME", "data-ingestion-service")
+INTERNAL_API_KEY          = os.getenv("INTERNAL_API_KEY", "")
+REC_SERVICE_URL           = os.getenv("REC_SERVICE_URL",           "http://recommendation-service:8002")
+NOTIFICATION_SERVICE_URL  = os.getenv("NOTIFICATION_SERVICE_URL",  "http://notification_service:8007")
 
 
 async def _notify_recommendation_reload() -> None:
@@ -51,6 +52,95 @@ async def _notify_recommendation_reload() -> None:
             log.warning("recommendation_reload_non_200", status=resp.status_code)
     except Exception as exc:
         log.warning(f"recommendation_reload_failed: {exc}")
+
+
+async def _broadcast_match_notifications() -> None:
+    """
+    After profiles are loaded into the recommendation service, fan out
+    match notifications in both directions:
+      • For every buyer  → notify each high-scoring matched farmer
+      • For every farmer → notify each high-scoring matched buyer
+    Threshold ≥ 0.20 keeps noise low while still catching real overlap.
+    """
+    headers = {"x-internal-secret": INTERNAL_API_KEY}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            buyers  = await conn.fetch(
+                "SELECT buyer_id, name, district, preferred_crops FROM buyer_features"
+            )
+            farmers = await conn.fetch(
+                "SELECT farmer_id, name, district, crops_offered FROM farmer_features"
+            )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # ── buyers → notify matched farmers ───────────────────────────────
+            for b in buyers:
+                try:
+                    r = await client.get(
+                        f"{REC_SERVICE_URL}/recommend/farmers-for-buyer/{b['buyer_id']}",
+                        params={"top_n": 5},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    crops = ", ".join((b["preferred_crops"] or [])[:2]) or "your interests"
+                    for farmer in r.json().get("recommended_farmers", []):
+                        if farmer.get("matchScore", 0) < 0.20:
+                            continue
+                        await client.post(
+                            f"{NOTIFICATION_SERVICE_URL}/internal/notify",
+                            json={
+                                "event":     "system",
+                                "farmer_id": farmer["id"],
+                                "meta": {
+                                    "message": (
+                                        f"{b['name']} from {b['district'] or 'Uganda'} "
+                                        f"is looking for {crops} — they match your produce. "
+                                        f"See them on your home feed."
+                                    )
+                                },
+                            },
+                            headers=headers,
+                        )
+                except Exception as exc:
+                    log.warning("broadcast_buyer_match_failed", buyer=b["buyer_id"], error=str(exc))
+
+            # ── farmers → notify matched buyers ───────────────────────────────
+            for f in farmers:
+                try:
+                    r = await client.get(
+                        f"{REC_SERVICE_URL}/recommend/buyers-for-farmer/{f['farmer_id']}",
+                        params={"top_n": 5},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    crops = ", ".join((f["crops_offered"] or [])[:2]) or "fresh produce"
+                    for buyer in r.json().get("recommended_buyers", []):
+                        if buyer.get("matchScore", 0) < 0.20:
+                            continue
+                        await client.post(
+                            f"{NOTIFICATION_SERVICE_URL}/internal/notify",
+                            json={
+                                "event":    "system",
+                                "buyer_id": buyer["id"],
+                                "meta": {
+                                    "message": (
+                                        f"{f['name']} from {f['district'] or 'Uganda'} "
+                                        f"grows {crops} — matching what you're looking for. "
+                                        f"See them on your home feed."
+                                    )
+                                },
+                            },
+                            headers=headers,
+                        )
+                except Exception as exc:
+                    log.warning("broadcast_farmer_match_failed", farmer=f["farmer_id"], error=str(exc))
+
+        log.info("match_broadcast_complete", buyers=len(buyers), farmers=len(farmers))
+
+    except Exception as exc:
+        log.warning(f"broadcast_match_notifications_failed: {exc}")
 
 _stream: TransactionStream | None = None
 _bootstrap_lock = asyncio.Lock()
@@ -87,6 +177,7 @@ async def lifespan(app: FastAPI):
                     result = await _run_bootstrap()
                     log.info("bootstrap_complete", **result)
                     await _notify_recommendation_reload()
+                    await _broadcast_match_notifications()
                 except Exception as exc:
                     log.error(f"bootstrap_failed: {exc}")
             else:
@@ -125,6 +216,7 @@ async def trigger_bootstrap(background_tasks: BackgroundTasks):
             result = await _run_bootstrap()
             log.info("manual_bootstrap_complete", **result)
             await _notify_recommendation_reload()
+            await _broadcast_match_notifications()
 
     background_tasks.add_task(_do_bootstrap)
     return {"message": "Bootstrap triggered — running in background"}
@@ -166,6 +258,47 @@ async def ingest_order_event(payload: IngestOrderEventPayload):
 
     inserted = await insert_price_observation(rec)
     return {"status": "inserted" if inserted else "rejected_outlier"}
+
+
+@app.post("/ingest/user-created")
+async def ingest_user_created(payload: UserCreatedPayload):
+    """
+    Syncs a newly-registered user to the ML feature store immediately,
+    then triggers a recommendation-service profile reload.
+    Called by user-service as a fire-and-forget background task after account creation.
+    """
+    from .transformers.farmer_transformer import transform_farmer
+    from .transformers.buyer_transformer import transform_buyer
+    from .feature_store import upsert_farmer, upsert_buyer
+
+    role = payload.role.lower()
+
+    if role in ("farmer", "both"):
+        record = transform_farmer({
+            "id":            payload.id,
+            "name":          payload.full_name,
+            "district":      payload.district or "",
+            "specialties":   payload.specialties or [],
+            "averageRating": 0.0,
+            "totalSales":    0,
+            "totalListings": 0,
+        })
+        await upsert_farmer(record)
+
+    if role in ("buyer", "both"):
+        record = transform_buyer({
+            "id":          payload.id,
+            "name":        payload.full_name,
+            "district":    payload.district or "",
+            "interests":   payload.interests or [],
+            "totalOrders": 0,
+            "totalSpent":  0,
+        })
+        await upsert_buyer(record)
+
+    await _notify_recommendation_reload()
+    log.info("user_created_synced", user_id=payload.id, role=role)
+    return {"status": "synced", "role": role}
 
 
 @app.get("/gaps/summary")

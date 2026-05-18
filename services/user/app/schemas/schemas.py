@@ -47,6 +47,8 @@ class AuthenticatedUser(BaseModel):
     # Farmer-specific
     farmerBio:          Optional[str]
     farmName:           Optional[str]
+    specialties:        List[str]
+    interests:          List[str]
     # Buyer stats
     totalOrders:        Optional[int]
     totalSpent:         Optional[int]
@@ -80,6 +82,18 @@ class FarmerProfile(BaseModel):
     responseTime:   Optional[str]
     isFollowedByMe: Optional[bool] = None
     isRatedByMe:    Optional[int]  = None
+
+# ── BuyerPublicProfile — public view (GET /users/buyers/{id})
+class BuyerPublicProfile(BaseModel):
+    id:          str
+    name:        str
+    initials:    str
+    avatarUrl:   Optional[str]
+    district:    str
+    verified:    bool
+    interests:   List[str]
+    memberSince: str
+    totalOrders: Optional[int]
 
 # ── FarmerReview
 class FarmerReviewOut(BaseModel):

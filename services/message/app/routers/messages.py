@@ -95,12 +95,14 @@ async def send_message(
     result = build_message_out(msg, viewer_id=user_id)
 
     # ── Real-time delivery to recipient
+    # Build a recipient-specific payload so isMine=False on their end
+    recipient_result = build_message_out(msg, viewer_id=recipient_id)
     await broadcast_to_conversation(
         buyer_id=str(conv.buyer_id),
         farmer_id=str(conv.farmer_id),
         payload={
             "event": "new_message",
-            "data":  result.model_dump(),
+            "data":  recipient_result.model_dump(),
         },
         exclude=user_id,
     )

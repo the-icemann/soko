@@ -37,9 +37,9 @@ class RegisterPayload(BaseModel):
             if not self.interests or not (1 <= len(self.interests) <= 3):
                 raise ValueError("Buyers must provide at least 1 interest")
         if self.role == UserRole.both:
-            if not self.specialties or len(self.specialties) < 3:
-                raise ValueError("Role 'both' requires at least 3 specialties")
-            if not self.interests or not (1 <= len(self.interests) <= 3):
+            if not self.specialties:
+                raise ValueError("Role 'both' requires at least 1 specialty")
+            if not self.interests:
                 raise ValueError("Role 'both' requires at least 1 interest")
         return self
 
@@ -98,8 +98,8 @@ class CompleteProfileRequest(BaseModel):
             if not self.interests or not (1 <= len(self.interests) <= 3):
                 raise ValueError("Buyers must provide at least 1 interest")
         if self.role == UserRole.both:
-            if not self.specialties or len(self.specialties) < 3:
-                raise ValueError("Role 'both' requires at least 3 specialties")
-            if not self.interests or not (1 <= len(self.interests) <= 3):
+            if not self.specialties:
+                raise ValueError("Role 'both' requires at least 1 specialty")
+            if not self.interests:
                 raise ValueError("Role 'both' requires at least 1 interest")
         return self
