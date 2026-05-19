@@ -228,59 +228,70 @@ Then go to **Settings → Secrets and variables → Variables → New repository
 
 ## Step 7 — First Server Setup
 
-SSH into the EC2 instance. The user_data script ran automatically on boot and:
-- Installed Docker, git, AWS CLI
-- Cloned the repo to `/opt/soko`
-- Fetched secrets and started all services
-
-Check status:
+SSH into the EC2 instance:
 ```bash
 ssh -i ~/.ssh/soko-prod-key.pem ubuntu@YOUR_EC2_IP
-
-# Check core services
-cd /opt/soko
-docker compose ps
-
-# Check ML stack
-cd services/soko-ml
-docker compose ps
-
-# Check logs
-docker compose logs --tail=50 auth_service
-docker compose logs --tail=50 soko-ml-gateway
 ```
 
-If the user_data script didn't run completely (can take 5-10 min on first boot):
+> **Note:** The user_data script clones from `main`. If your working branch is not yet merged
+> into `main`, the clone will be incomplete. Run the manual setup below instead.
+
+**Manual setup (recommended until `price_prediction_service` is merged into `main`):**
 ```bash
-# Run manually
+# Clone the correct branch into /opt/soko
+sudo git clone -b price_prediction_service https://github.com/the-icemann/soko.git /opt/soko
+sudo chown -R ubuntu:ubuntu /opt/soko
+
+# Fetch secrets and start core platform
 cd /opt/soko
 chmod +x scripts/fetch-secrets.sh scripts/fetch-ml-secrets.sh
 bash scripts/fetch-secrets.sh
 docker network create soko-ml-bridge 2>/dev/null || true
 docker compose up -d --build
 
-cd services/soko-ml
+# Start ML stack
+cd /opt/soko/services/soko-ml
 bash /opt/soko/scripts/fetch-ml-secrets.sh
 docker compose up -d --build
+```
+
+Check status:
+```bash
+# Core services
+cd /opt/soko && docker compose ps
+
+# ML stack
+cd /opt/soko/services/soko-ml && docker compose ps
+
+# Logs
+docker compose logs --tail=50 auth_service
+docker compose logs --tail=50 soko-ml-gateway
 ```
 
 ---
 
 ## Step 8 — SSL with Let's Encrypt
 
+> **Skip this step if you have no domain yet.** The app runs fine over HTTP on the EC2 IP
+> in the meantime. Come back here once `soko-ug.com` NS propagation is confirmed working.
+
 Once your domain's A record points to the EC2 Elastic IP:
+
+1. In `terraform.tfvars` set `domain_name = "soko-ug.com"`
+2. Uncomment the `us_east_1` provider alias in `main.tf`
+3. Uncomment the contents of `acm.tf`
+4. Uncomment the `depends_on` and `viewer_certificate` domain lines in `cloudfront.tf`
+5. Run `terraform apply` — Terraform will create the ACM cert and Route 53 records automatically
+6. Then run Certbot on EC2 for the NGINX certificate:
 
 ```bash
 ssh -i ~/.ssh/soko-prod-key.pem ubuntu@YOUR_EC2_IP
 
-# Install certbot
 sudo apt-get install -y certbot python3-certbot-nginx
 
-# Get certificate (NGINX must be running on port 80)
-sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com \
+sudo certbot --nginx -d soko-ug.com -d www.soko-ug.com \
   --non-interactive --agree-tos -m andrewssuubi@gmail.com
 
-# Certbot auto-renews via systemd timer — verify:
 sudo systemctl status certbot.timer
 ```
 
@@ -290,15 +301,24 @@ Then update the PesaPal callback URLs in Secrets Manager to use `https://`.
 
 ## Step 9 — Deploy Frontend (First Time)
 
-Push to main in the frontend repo to trigger the GitHub Actions workflow, or run manually:
-
+Get your CloudFront URL and EC2 IP from Terraform outputs:
 ```bash
-cd /home/the-icemann/Desktop/soko_client_final
+cd infrastructure
+terraform output cloudfront_domain      # e.g. xxxx.cloudfront.net  ← frontend lives here
+terraform output ec2_public_ip          # e.g. 13.244.217.134        ← backend API
+```
 
-# Set the API URL for local build test
-VITE_API_BASE_URL=https://yourdomain.com npm run build
+Update the `VITE_API_BASE_URL` GitHub Actions variable in the frontend repo
+(**Settings → Secrets and variables → Variables**) to `http://<ec2_public_ip>` (or
+`https://soko-ug.com` once the domain is live).
 
-# Deploy manually (AWS CLI must be configured)
+Deploy manually (or just push to main to trigger GitHub Actions):
+```bash
+cd /path/to/soko_client_final
+
+# Build — use EC2 IP until domain is live
+VITE_API_BASE_URL=http://13.244.217.134 npm run build
+
 aws s3 sync dist/assets/ s3://soko-frontend-prod/assets/ \
   --cache-control "public, max-age=31536000, immutable" --delete
 
@@ -311,7 +331,8 @@ aws cloudfront create-invalidation \
   --paths "/*"
 ```
 
-Frontend is now live at the CloudFront domain (or your custom subdomain if configured).
+Frontend is live at the CloudFront URL (`https://xxxx.cloudfront.net`).
+Once `soko-ug.com` is wired up, it will also be at `https://app.soko-ug.com`.
 
 ---
 
@@ -319,12 +340,16 @@ Frontend is now live at the CloudFront domain (or your custom subdomain if confi
 
 ### Deploying changes
 ```bash
-# Backend: just push to main — GitHub Actions SSHes in and redeploys
-git push origin main
+# Backend: push to price_prediction_service (or main once merged)
+git push origin price_prediction_service
 
-# Frontend: just push to main in the client repo
-cd /path/to/soko_client_final && git push origin main
+# Frontend: push to price_preds (or main once merged)
+cd /path/to/soko_client_final && git push origin price_preds
 ```
+
+> Both GitHub Actions workflows currently trigger on their respective working branches
+> (`price_prediction_service` for backend, `price_preds` for frontend) as well as `main`.
+> Once both branches are merged into `main`, only `main` pushes are needed.
 
 ### Viewing logs
 ```bash

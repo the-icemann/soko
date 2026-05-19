@@ -5,7 +5,8 @@
 set -euo pipefail
 
 REGION="af-south-1"
-BUCKET="soko-terraform-state"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+BUCKET="soko-terraform-state-${ACCOUNT_ID}"
 TABLE="soko-terraform-locks"
 
 echo "Creating Terraform state bucket: $BUCKET"
@@ -38,7 +39,13 @@ aws dynamodb create-table \
   --region "$REGION"
 
 echo ""
-echo "Bootstrap complete. Now run:"
+echo "Bootstrap complete."
+echo "State bucket: $BUCKET"
+echo ""
+echo "Now update infrastructure/main.tf — change the backend bucket to:"
+echo "  bucket = \"$BUCKET\""
+echo ""
+echo "Then run:"
 echo "  cd infrastructure"
 echo "  terraform init"
 echo "  cp terraform.tfvars.example terraform.tfvars  # fill in your values"

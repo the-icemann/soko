@@ -14,6 +14,8 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   aliases = var.domain_name != "" ? ["app.${var.domain_name}"] : []
 
+  # depends_on = [aws_acm_certificate_validation.frontend]  # uncomment with domain
+
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "s3-frontend"
@@ -76,11 +78,12 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    # If you have an ACM certificate for your domain, replace this with:
-    # acm_certificate_arn      = aws_acm_certificate.frontend.arn
-    # ssl_support_method       = "sni-only"
-    # minimum_protocol_version = "TLSv1.2_2021"
     cloudfront_default_certificate = true
+    # Uncomment below and remove line above when domain is ready:
+    # acm_certificate_arn            = aws_acm_certificate_validation.frontend[0].certificate_arn
+    # ssl_support_method             = "sni-only"
+    # minimum_protocol_version       = "TLSv1.2_2021"
+    # cloudfront_default_certificate = false
   }
 
   tags = { Name = "soko-frontend-cdn" }

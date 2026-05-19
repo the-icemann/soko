@@ -11,10 +11,10 @@ terraform {
   # Remote state — S3 bucket must exist before running `terraform init`
   # Run `scripts/bootstrap-tf-state.sh` once to create it.
   backend "s3" {
-    bucket         = "soko-terraform-state"
+    bucket         = "soko-terraform-state-491085424720"
     key            = "prod/terraform.tfstate"
     region         = "af-south-1"
-    dynamodb_table = "soko-terraform-locks"
+    use_lockfile   = true
     encrypt        = true
   }
 }
@@ -30,3 +30,17 @@ provider "aws" {
     }
   }
 }
+
+# CloudFront ACM certificates must live in us-east-1 — uncomment when adding domain
+# provider "aws" {
+#   alias  = "us_east_1"
+#   region = "us-east-1"
+#
+#   default_tags {
+#     tags = {
+#       Project     = "soko"
+#       Environment = var.environment
+#       ManagedBy   = "terraform"
+#     }
+#   }
+# }
