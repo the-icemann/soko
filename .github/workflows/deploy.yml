@@ -30,8 +30,8 @@ jobs:
 
             echo "=== Pulling latest code ==="
             cd /opt/soko
-            git fetch origin main
-            git reset --hard origin/main
+            git fetch origin
+            git reset --hard origin/${{ github.ref_name }}
 
             echo "=== Refreshing secrets ==="
             bash scripts/fetch-secrets.sh
