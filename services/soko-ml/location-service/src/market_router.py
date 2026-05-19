@@ -122,7 +122,7 @@ async def route(
     farmer_lat: float,
     farmer_lng: float,
     crop: str,
-    quantity_kg: float,
+    quantity_kg: float | None,
     max_distance_km: float = DEFAULT_MAX_KM,
 ) -> dict:
     """
@@ -168,7 +168,7 @@ async def route(
 
         week1_price = float(predictions[0]["predicted_price_ugx"])
         net_value   = week1_price - transport_cost
-        total_net   = round(net_value * quantity_kg, 0)
+        total_net   = round(net_value * quantity_kg, 0) if quantity_kg is not None else 0.0
 
         signal_data = derive_signal(crop, predictions)
 

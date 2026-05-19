@@ -81,7 +81,7 @@ async def determine_tier(crop: str, market: str) -> int:
 async def build_tier2_response(
     farmer_id: str,
     crop: str,
-    quantity_kg: float,
+    quantity_kg: Optional[float],
     max_distance_km: float,
 ) -> dict:
     """Tier 2: returns category-level price band estimate."""
@@ -125,7 +125,7 @@ async def build_tier2_response(
     }
 
 
-def build_tier3_response(farmer_id: str, crop: str, quantity_kg: float, reason: str = "") -> dict:
+def build_tier3_response(farmer_id: str, crop: str, quantity_kg: Optional[float], reason: str = "") -> dict:
     """Tier 3: crop not recognised. Returns graceful no-data response. Never raises."""
     return {
         "farmer_id":    farmer_id,

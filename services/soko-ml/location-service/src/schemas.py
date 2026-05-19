@@ -7,7 +7,7 @@ class RouteRequest(BaseModel):
     farmer_lat:      float
     farmer_lng:      float
     crop:            str
-    quantity_kg:     float
+    quantity_kg:     Optional[float] = None  # None = specialty-only, no listing yet
     max_distance_km: float = 150.0
 
 
@@ -27,7 +27,7 @@ class MarketResult(BaseModel):
 class RouteResponse(BaseModel):
     farmer_id:           str
     crop:                str
-    quantity_kg:         float
+    quantity_kg:         Optional[float]
     currency:            str = "UGX"
     tier:                int
     ranked_markets:      list[MarketResult]
