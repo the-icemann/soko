@@ -92,41 +92,53 @@ async def start_conversation(
     user_id: str     = Depends(get_current_user_id),
     db:      Session = Depends(get_db),
 ):
-    buyer_id  = uuid.UUID(user_id)
-    farmer_id = uuid.UUID(payload.farmer_id)
+    initiator_id = uuid.UUID(user_id)
+    recipient_id = uuid.UUID(payload.recipient_id)
 
-    if buyer_id == farmer_id:
+    if initiator_id == recipient_id:
         raise HTTPException(status_code=400, detail="Cannot message yourself")
 
-    # Resume existing conversation if one already exists
+    # Resume existing conversation if one already exists (check both orderings)
     existing = db.query(Conversation).filter(
-        and_(
-            Conversation.buyer_id  == buyer_id,
-            Conversation.farmer_id == farmer_id,
+        or_(
+            and_(
+                Conversation.buyer_id  == initiator_id,
+                Conversation.farmer_id == recipient_id,
+            ),
+            and_(
+                Conversation.buyer_id  == recipient_id,
+                Conversation.farmer_id == initiator_id,
+            ),
         )
     ).first()
 
     if existing:
+        is_buyer_slot = str(existing.buyer_id) == user_id
         msg = Message(
             conversation_id=existing.id,
-            sender_id=buyer_id,
-            sender_name=existing.buyer_name,
-            sender_initials=existing.buyer_initials,
+            sender_id=initiator_id,
+            sender_name=existing.buyer_name if is_buyer_slot else existing.farmer_name,
+            sender_initials=existing.buyer_initials if is_buyer_slot else existing.farmer_initials,
             body=payload.first_message,
         )
         db.add(msg)
         existing.last_message    = payload.first_message
         existing.last_message_at = datetime.now(timezone.utc)
-        existing.last_sender_id  = buyer_id
-        existing.farmer_unread  += 1
+        existing.last_sender_id  = initiator_id
+        if is_buyer_slot:
+            existing.farmer_unread += 1
+        else:
+            existing.buyer_unread += 1
         db.commit()
         db.refresh(existing)
         return _conversation_response(existing, msg, viewer_id=user_id, is_new=False)
 
-    # Fetch user and listing snapshots in parallel
+    # Fetch user snapshots in parallel
+    buyer_id  = initiator_id
+    farmer_id = recipient_id
     buyer, farmer = await asyncio.gather(
         fetch_user(user_id),
-        fetch_user(payload.farmer_id),
+        fetch_user(payload.recipient_id),
     )
 
     listing_name = None
