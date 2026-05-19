@@ -6,6 +6,15 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_protocol                  = "sigv4"
 }
 
+locals {
+  # Path prefixes handled by NGINX on EC2 — must match nginx.conf location blocks exactly
+  api_path_prefixes = [
+    "/auth/*", "/oauth/*", "/users/*", "/listings/*", "/orders/*",
+    "/payments/*", "/webhook/*", "/message/*", "/notifications/*",
+    "/posts/*", "/ussd/*", "/recommendations/*", "/ml/*", "/health*"
+  ]
+}
+
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -16,10 +25,24 @@ resource "aws_cloudfront_distribution" "frontend" {
 
   # depends_on = [aws_acm_certificate_validation.frontend]  # uncomment with domain
 
+  # S3 origin — serves static frontend assets
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "s3-frontend"
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+  }
+
+  # EC2 origin — CloudFront talks HTTP to EC2 so the browser always uses HTTPS.
+  # nip.io maps "<ip>.nip.io" → that IP, giving CloudFront a valid hostname.
+  origin {
+    domain_name = "${aws_eip.soko.public_ip}.nip.io"
+    origin_id   = "ec2-api"
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
   }
 
   default_cache_behavior {
@@ -56,6 +79,29 @@ resource "aws_cloudfront_distribution" "frontend" {
     min_ttl     = 0
     default_ttl = 31536000  # 1 year — Vite hashes filenames on every build
     max_ttl     = 31536000
+  }
+
+  # API behaviors — route each service path prefix through to EC2, no caching
+  dynamic "ordered_cache_behavior" {
+    for_each = local.api_path_prefixes
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      target_origin_id       = "ec2-api"
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
+      cached_methods         = ["GET", "HEAD"]
+      compress               = false
+
+      forwarded_values {
+        query_string = true
+        headers      = ["Authorization", "Content-Type", "Accept", "Origin", "X-User-Id", "X-User-Role"]
+        cookies { forward = "all" }
+      }
+
+      min_ttl     = 0
+      default_ttl = 0
+      max_ttl     = 0
+    }
   }
 
   # SPA routing: 404 from S3 → serve index.html so React Router handles it
