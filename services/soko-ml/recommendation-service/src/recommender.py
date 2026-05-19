@@ -127,6 +127,7 @@ class Recommender:
         scored = [
             (self._score_farmer_for_buyer(farmer, buyer, buyer_id), farmer)
             for _, farmer in self.profiles.farmers.iterrows()
+            if str(farmer["id"]) != buyer_id
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -183,6 +184,7 @@ class Recommender:
         scored = [
             (self._score_buyer_for_farmer(buyer, farmer, max_spend), buyer)
             for _, buyer in self.profiles.buyers.iterrows()
+            if str(buyer["id"]) != farmer_id
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
