@@ -22,6 +22,24 @@ router = APIRouter(tags=["Conversations"])
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+async def _notify_new_message(recipient_id: str, sender_name: str, message_id: str) -> None:
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.NOTIFICATION_SERVICE_URL}/internal/notify",
+                json={
+                    "event":      "new_message",
+                    "actor_id":   recipient_id,
+                    "actor_name": sender_name,
+                    "message_id": message_id,
+                },
+                headers={"x-internal-secret": settings.INTERNAL_SECRET},
+                timeout=3.0,
+            )
+    except Exception as e:
+        logger.warning(f"Notification failed for conversation message {message_id}: {e}")
+
+
 async def fetch_user(user_id: str) -> dict:
     try:
         async with httpx.AsyncClient() as client:
@@ -131,6 +149,11 @@ async def start_conversation(
             existing.buyer_unread += 1
         db.commit()
         db.refresh(existing)
+
+        notif_recipient = str(existing.farmer_id) if is_buyer_slot else str(existing.buyer_id)
+        notif_sender    = existing.buyer_name     if is_buyer_slot else existing.farmer_name
+        await _notify_new_message(notif_recipient, notif_sender, str(msg.id))
+
         return _conversation_response(existing, msg, viewer_id=user_id, is_new=False)
 
     # Fetch user snapshots in parallel
@@ -176,6 +199,8 @@ async def start_conversation(
     db.commit()
     db.refresh(conv)
     db.refresh(msg)
+
+    await _notify_new_message(payload.recipient_id, conv.buyer_name, str(msg.id))
 
     return _conversation_response(conv, msg, viewer_id=user_id, is_new=True)
 
