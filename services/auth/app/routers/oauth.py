@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from authlib.integrations.starlette_client import OAuth
@@ -15,6 +15,8 @@ from app.core.security import (
 from app.core.config import settings
 from app.schemas.auth import CompleteProfileRequest
 import httpx
+
+from .auth import _sync_user_to_ml
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,7 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 @router.post("/complete-profile")
 async def complete_profile(
     body: CompleteProfileRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     setup_token: str | None = Cookie(default=None),
 ):
@@ -184,6 +187,17 @@ async def complete_profile(
     # ── 6. Issue real tokens, clear setup cookie
     access_token  = create_access_token(str(user.id), user.role.value, user.email)
     refresh_token = create_refresh_token(str(user.id))
+
+    # Sync new OAuth user to ML feature store so recommendations work immediately
+    background_tasks.add_task(
+        _sync_user_to_ml,
+        str(user.id),
+        body.role.value,
+        name,
+        body.district,
+        body.specialties,
+        body.interests,
+    )
 
     response = JSONResponse({"message": "Profile complete", "role": user.role.value})
     _set_auth_cookies(response, access_token, refresh_token)

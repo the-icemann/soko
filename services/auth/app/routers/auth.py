@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Response, Header
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, Header
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.user import AuthCredential, UserRole as DBUserRole
@@ -21,8 +21,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Auth"])
 
 
+async def _sync_user_to_ml(
+    user_id:     str,
+    role:        str,
+    full_name:   str,
+    district:    str | None,
+    specialties: list | None,
+    interests:   list | None,
+) -> None:
+    """Fire-and-forget: sync new user into the ML feature store immediately."""
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.INGEST_SERVICE_URL}/ingest/user-created",
+                json={
+                    "id":          user_id,
+                    "role":        role,
+                    "full_name":   full_name,
+                    "district":    district,
+                    "specialties": specialties,
+                    "interests":   interests,
+                },
+                headers={"x-internal-secret": settings.INTERNAL_SECRET},
+                timeout=8.0,
+            )
+    except Exception as e:
+        logger.warning(f"ML feature store sync failed for user {user_id}: {e}")
+
+
 @router.post("/register", response_model=LoginResponse, status_code=201)
-async def register(payload: RegisterPayload, db: Session = Depends(get_db)):
+async def register(payload: RegisterPayload, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
 
     # ── 1. Check for existing email
     if db.query(AuthCredential).filter(AuthCredential.email == payload.email).first():
@@ -80,6 +108,17 @@ async def register(payload: RegisterPayload, db: Session = Depends(get_db)):
     # ── 4. Issue tokens
     access_token  = create_access_token(str(cred.id), cred.role.value, cred.email)
     refresh_token = create_refresh_token(str(cred.id))
+
+    # Sync new user to ML feature store so recommendations are available immediately
+    background_tasks.add_task(
+        _sync_user_to_ml,
+        str(cred.id),
+        cred.role.value,
+        payload.fullName,
+        payload.district,
+        payload.specialties,
+        payload.interests,
+    )
 
     return LoginResponse(
         tokens=AuthTokens(access_token=access_token, refresh_token=refresh_token),
