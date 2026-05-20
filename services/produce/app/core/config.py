@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY:     str
     CLOUDINARY_API_SECRET:  str
     ML_GATEWAY_URL:         str = ""  # Set to http://ml-gateway:8000 when ML stack is running
+    NOTIFICATION_SERVICE_URL: str = "http://notification_service:8007"
 
     class Config:
         env_file = ".env"

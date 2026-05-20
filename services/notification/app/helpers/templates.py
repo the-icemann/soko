@@ -100,6 +100,11 @@ def get_template(event: str, role: str, meta: dict = {}) -> Optional[Notificatio
                 body=message or "Welcome to Soko!",
                 entity_type=None,
             ),
+            "farmer": NotificationTemplate(
+                title="A buyer is looking for your produce!",
+                body=message or "Someone is interested in what you grow but you have no active listings. Add one now!",
+                entity_type="sell",
+            ),
         },
     }
 

@@ -150,6 +150,21 @@ async def notify(payload: NotifyPayload, db: Session = Depends(get_db)):
             meta=meta,
         )
 
+    # ── Buyer-interest notification (buyer interested in farmer with no listings)
+    if event == "buyer_interest" and payload.farmer_id:
+        meta["message"] = (
+            f"{payload.actor_name or 'A buyer'} is interested in your produce "
+            "but you have no active listings. Add one now to connect!"
+        )
+        await deliver(
+            db=db,
+            user_id=payload.farmer_id,
+            event="system",
+            role="farmer",
+            entity_id=None,
+            meta=meta,
+        )
+
     # ── System notification (used by USSD welcome SMS)
     if event == "system":
         target_id = payload.buyer_id or payload.farmer_id or payload.actor_id
