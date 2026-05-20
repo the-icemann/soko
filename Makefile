@@ -635,13 +635,14 @@ port-reference:
 fill-envs:
 	@python3 scripts/fill_envs.py
 
-seed: fill-envs
+seed:
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════╗"
 	@echo "║                     Soko — Seeding all services                     ║"
 	@echo "╚══════════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	@echo "Both stacks must be running: make start"
+	@echo "For local dev, run 'make fill-envs' first if .env files are missing."
 	@echo ""
 	@python3 scripts/seed.py
 

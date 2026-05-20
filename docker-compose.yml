@@ -160,10 +160,11 @@ services:
       - "127.0.0.1:8003:8003"
     env_file: ./services/produce/.env
     environment:
-      DATABASE_URL:      postgresql://produce_user:${PRODUCE_DB_PASS:-produce_pass}@produce_db:5432/produce_db
-      REDIS_URL:         redis://redis:6379/0
-      USER_SERVICE_URL:  http://user_service:8002
-      ML_GATEWAY_URL:    http://ml-gateway:8000
+      DATABASE_URL:             postgresql://produce_user:${PRODUCE_DB_PASS:-produce_pass}@produce_db:5432/produce_db
+      REDIS_URL:                redis://redis:6379/0
+      USER_SERVICE_URL:         http://user_service:8002
+      ML_GATEWAY_URL:           http://ml-gateway:8000
+      NOTIFICATION_SERVICE_URL: http://notification_service:8007
     depends_on:
       produce_db:
         condition: service_healthy
