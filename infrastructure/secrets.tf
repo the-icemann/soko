@@ -29,6 +29,10 @@ resource "aws_secretsmanager_secret_version" "platform" {
     INTERNAL_SECRET   = "CHANGE_ME"
     ALGORITHM         = "HS256"
 
+    # ── App URLs (set to your CloudFront domain until soko-ug.com is wired up) ──
+    FRONTEND_URL        = "CHANGE_ME"
+    GOOGLE_REDIRECT_URI = "CHANGE_ME/auth/google/callback"
+
     # ── Google OAuth ──────────────────────────────────────────────────────────
     GOOGLE_CLIENT_ID     = "CHANGE_ME"
     GOOGLE_CLIENT_SECRET = "CHANGE_ME"

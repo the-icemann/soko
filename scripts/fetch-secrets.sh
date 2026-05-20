@@ -20,8 +20,8 @@ RAW=$(aws secretsmanager get-secret-value \
   --query "SecretString" \
   --output text)
 
-# Helper: extract a key from the JSON
-s() { echo "$RAW" | jq -r ".${1}"; }
+# Helper: extract a key (returns empty string if null or missing)
+s() { echo "$RAW" | jq -r "(.${1} // empty)"; }
 
 # ── Root .env (docker-compose substitution) ───────────────────────────────────
 # Docker Compose auto-loads this file for ${VAR} substitution
@@ -40,14 +40,20 @@ EOF
 chmod 600 "$REPO_DIR/.env"
 echo "[fetch-secrets] Root .env written."
 
+# Resolve app base URL — read directly from secrets manager
+FRONTEND_URL="$(s FRONTEND_URL)"
+GOOGLE_REDIRECT_URI="$(s GOOGLE_REDIRECT_URI)"
+# Fall back to deriving GOOGLE_REDIRECT_URI from FRONTEND_URL if not set separately
+: "${GOOGLE_REDIRECT_URI:=${FRONTEND_URL}/auth/google/callback}"
+
 # ── Auth Service ──────────────────────────────────────────────────────────────
 cat > "$REPO_DIR/services/auth/.env" <<EOF
 SECRET_KEY=$(s SECRET_KEY)
 ALGORITHM=$(s ALGORITHM)
 GOOGLE_CLIENT_ID=$(s GOOGLE_CLIENT_ID)
 GOOGLE_CLIENT_SECRET=$(s GOOGLE_CLIENT_SECRET)
-GOOGLE_REDIRECT_URI=https://$(s DOMAIN 2>/dev/null || echo "yourdomain.com")/auth/google/callback
-FRONTEND_URL=https://$(s DOMAIN 2>/dev/null || echo "yourdomain.com")
+GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+FRONTEND_URL=${FRONTEND_URL}
 INTERNAL_SECRET=$(s INTERNAL_SECRET)
 USER_SERVICE_URL=http://user_service:8002
 EOF
@@ -59,12 +65,12 @@ INTERNAL_SECRET=$(s INTERNAL_SECRET)
 PESAPAL_CONSUMER_KEY=$(s PESAPAL_CONSUMER_KEY)
 PESAPAL_CONSUMER_SECRET=$(s PESAPAL_CONSUMER_SECRET)
 PESAPAL_ENV=$(s PESAPAL_ENV)
-PESAPAL_IPN_URL=https://$(s DOMAIN 2>/dev/null || echo "yourdomain.com")/payments/webhook/pesapal/ipn
-PESAPAL_CALLBACK_URL=https://$(s DOMAIN 2>/dev/null || echo "yourdomain.com")/payments/callback
+PESAPAL_IPN_URL=${FRONTEND_URL}/payments/webhook/pesapal/ipn
+PESAPAL_CALLBACK_URL=${FRONTEND_URL}/payments/callback
 ORDER_SERVICE_URL=http://order_service:8004
 USER_SERVICE_URL=http://user_service:8002
 NOTIFICATION_SERVICE_URL=http://notification_service:8007
-FRONTEND_URL=https://$(s DOMAIN 2>/dev/null || echo "yourdomain.com")
+FRONTEND_URL=${FRONTEND_URL}
 EOF
 chmod 600 "$REPO_DIR/services/payment/.env"
 

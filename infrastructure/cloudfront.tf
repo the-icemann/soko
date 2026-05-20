@@ -62,6 +62,60 @@ resource "aws_cloudfront_distribution" "frontend" {
     max_ttl     = 31536000
   }
 
+  # SPA auth pages — these share the /auth/ prefix with backend API routes.
+  # List them explicitly BEFORE the /auth/* EC2 behavior so CloudFront serves
+  # them from S3 instead of proxying to NGINX. Deep-links and page-reloads work
+  # because S3 returns 404→index.html via the custom_error_response below.
+  ordered_cache_behavior {
+    path_pattern           = "/auth/sign-in"
+    target_origin_id       = "s3-frontend"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+    forwarded_values {
+      query_string = false
+      cookies { forward = "none" }
+    }
+    min_ttl     = 0
+    default_ttl = 0
+    max_ttl     = 0
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/auth/sign-up"
+    target_origin_id       = "s3-frontend"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+    forwarded_values {
+      query_string = false
+      cookies { forward = "none" }
+    }
+    min_ttl     = 0
+    default_ttl = 0
+    max_ttl     = 0
+  }
+
+  # complete-profile: forward query_string so the ?access_token= param (set by
+  # the backend after Google OAuth for returning users) reaches the SPA.
+  ordered_cache_behavior {
+    path_pattern           = "/auth/complete-profile"
+    target_origin_id       = "s3-frontend"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+    forwarded_values {
+      query_string = true
+      cookies { forward = "none" }
+    }
+    min_ttl     = 0
+    default_ttl = 0
+    max_ttl     = 0
+  }
+
   # Cache JS/CSS/images aggressively (content-hashed filenames by Vite)
   ordered_cache_behavior {
     path_pattern           = "/assets/*"

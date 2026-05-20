@@ -73,12 +73,12 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
                 detail="An account with this email already exists. Please log in with your password."
             )
 
-        # Returning OAuth user — issue real tokens immediately
-        access_token  = create_access_token(str(user.id), user.role.value, user.email)
-        refresh_token = create_refresh_token(str(user.id))
-        response = RedirectResponse(url=f"{settings.FRONTEND_URL}/marketplace")
-        _set_auth_cookies(response, access_token, refresh_token)
-        return response
+        # Returning OAuth user — pass token to SPA via query param so the
+        # frontend zustand store can pick it up without relying on httpOnly cookies.
+        access_token = create_access_token(str(user.id), user.role.value, user.email)
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/auth/complete-profile?access_token={access_token}"
+        )
 
     # ── 3. New user — skeleton credential, no commit yet
     user = AuthCredential(
@@ -199,7 +199,11 @@ async def complete_profile(
         body.interests,
     )
 
-    response = JSONResponse({"message": "Profile complete", "role": user.role.value})
+    response = JSONResponse({
+        "message": "Profile complete",
+        "role": user.role.value,
+        "access_token": access_token,
+    })
     _set_auth_cookies(response, access_token, refresh_token)
     _clear_setup_cookie(response)
     return response
