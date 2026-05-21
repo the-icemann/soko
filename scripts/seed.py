@@ -72,6 +72,40 @@ ORDER_PAIRS = [
     (9, 24),  # Tumwesige Paul     → Waiswa / Yellow Beans Bam 1
 ]
 
+# ── Crop image URLs (Unsplash CDN, publicly accessible) ──────────────────────
+# Matched by lowercase keyword in the listing name.
+# Used by seed_listing_images() to download → upload via Cloudinary.
+CROP_IMAGES = {
+    "maize":   "https://images.unsplash.com/photo-1601593346740-925612772716?w=800&q=80",
+    "sorghum": "https://images.unsplash.com/photo-1603048588665-791ca8aea617?w=800&q=80",
+    "millet":  "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?w=800&q=80",
+    "bean":    "https://images.unsplash.com/photo-1553682538-a32cf88c62c7?w=800&q=80",
+    "potato":  "https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=800&q=80",
+    "tomato":  "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=800&q=80",
+    "matoke":  "https://images.unsplash.com/photo-1571771894821-ce9b6c11b08e?w=800&q=80",
+    "banana":  "https://images.unsplash.com/photo-1571771894821-ce9b6c11b08e?w=800&q=80",
+    "cassava": "https://images.unsplash.com/photo-1614668701670-d23b2c5aac01?w=800&q=80",
+}
+CROP_IMAGE_DEFAULT = "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?w=800&q=80"
+
+# Per-post cover images indexed to match BLOG_POSTS order.
+# These are stored directly as URLs in the blog DB (no Cloudinary).
+BLOG_POST_IMAGES = [
+    "https://images.unsplash.com/photo-1601593346740-925612772716?w=800&q=80",  # maize/solar dryer
+    "https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=800&q=80",  # potatoes
+    "https://images.unsplash.com/photo-1553682538-a32cf88c62c7?w=800&q=80",     # K132 yellow beans
+    "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=800&q=80",  # tomatoes / drip
+]
+
+
+def pick_crop_image(name: str) -> str:
+    n = name.lower()
+    for keyword, url in CROP_IMAGES.items():
+        if keyword in n:
+            return url
+    return CROP_IMAGE_DEFAULT
+
+
 # ── Blog posts authored by seeded farmers ────────────────────────────────────
 BLOG_POSTS = [
     {
@@ -785,6 +819,45 @@ def create_listings(farmers: list) -> list:
     return all_listings
 
 
+# ── Phase 3b: Seed listing images ────────────────────────────────────────────
+
+def seed_listing_images(listings: list) -> None:
+    """
+    Downloads a crop-appropriate image from Unsplash and uploads it to each
+    listing via the existing multipart endpoint (which stores to Cloudinary).
+    Skips gracefully if the download or upload fails.
+    """
+    print("\n── Phase 3b: Seeding listing images ────────────────────────────")
+    headers_common = {"User-Agent": "Soko-Seed/1.0 (dev)"}
+
+    for listing in listings:
+        img_url = pick_crop_image(listing["name"])
+        try:
+            dl = requests.get(img_url, timeout=15, headers=headers_common, allow_redirects=True)
+            if not dl.ok:
+                print(f"  ~ Download failed ({dl.status_code}): {listing['name']}")
+                continue
+
+            content_type = dl.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+            ext = ext_map.get(content_type, "jpg")
+            if content_type not in ext_map:
+                content_type = "image/jpeg"
+
+            resp = requests.post(
+                f"{PRODUCE}/listings/{listing['id']}/images",
+                files={"files": (f"photo.{ext}", dl.content, content_type)},
+                headers=farmer_headers(listing["farmer_id"]),
+                timeout=30,
+            )
+            if resp.ok:
+                print(f"  ✓ Image: {listing['name']}")
+            else:
+                print(f"  ~ Upload failed ({resp.status_code}): {listing['name']}")
+        except Exception as e:
+            print(f"  ~ Skipped {listing['name']}: {e}")
+
+
 # ── Phase 4: Place orders ────────────────────────────────────────────────────
 
 def place_orders(buyers: list, listings: list) -> list:
@@ -898,17 +971,22 @@ def create_blog_posts(farmers: list) -> None:
     print("\n── Phase 6: Publishing farmer blog posts ────────────────────────")
 
     all_farmers = farmers  # same order as FARMERS + EXTRA_FARMERS
-    for post_def in BLOG_POSTS:
+    for post_idx, post_def in enumerate(BLOG_POSTS):
         idx = post_def["farmer_idx"]
         if idx >= len(all_farmers):
             print(f"  SKIP blog post (farmer_idx {idx} out of range)")
             continue
 
         f = all_farmers[idx]
+        cover = (
+            BLOG_POST_IMAGES[post_idx]
+            if post_idx < len(BLOG_POST_IMAGES)
+            else BLOG_POST_IMAGES[-1]
+        )
         payload = {
             "title":    post_def["title"],
             "excerpt":  post_def["excerpt"],
-            "image":    "https://images.unsplash.com/photo-1628352081506-83c43123a6b9?w=800",
+            "image":    cover,
             "category": post_def["category"],
             "tags":     post_def["tags"],
             "body":     post_def["body"],
@@ -1061,6 +1139,7 @@ if __name__ == "__main__":
     farmers, buyers = register_users()
     update_profiles(farmers)
     listings        = create_listings(farmers)
+    seed_listing_images(listings)
     order_ids       = place_orders(buyers, listings)
     create_conversations(buyers, listings)
     create_blog_posts(farmers)
