@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost/auth/google/callback"
     FRONTEND_URL: str
-    USER_SERVICE_URL: str
-    REFRESH_TOKEN_EXPIRE_DAYS:int = 30
+    USER_SERVICE_URL:   str
+    INGEST_SERVICE_URL: str = "http://data-ingestion-service:8004"
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     class Config:
         env_file = ".env"

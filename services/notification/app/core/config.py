@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra   = "ignore"  # tolerate stale keys in .env (e.g. removed sendgrid fields)
 
 
 settings = Settings()

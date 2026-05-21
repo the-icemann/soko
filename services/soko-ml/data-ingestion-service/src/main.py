@@ -1,0 +1,311 @@
+"""
+data-ingestion-service — entry point.
+
+Modes of operation:
+  Bootstrap  — on startup, pulls all profiles and historical orders from backend services.
+               Only runs when the feature store tables are completely empty.
+  Streaming  — runs continuously, consuming soko.transactions for live price observations.
+  HTTP API   — exposes /health, /bootstrap, /ingest/* endpoints.
+"""
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+
+import httpx
+import structlog
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse
+
+from .feature_store import get_pool, close_pool, is_bootstrap_needed, get_all_coverage, get_gap_summary
+from .health import full_health_check
+from .schemas import BootstrapStatusResponse, IngestOrderEventPayload, UserCreatedPayload
+from .streams.transaction_stream import TransactionStream
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.add_log_level,
+        structlog.processors.JSONRenderer(),
+    ]
+)
+log = structlog.get_logger()
+
+BOOTSTRAP_ON_STARTUP      = os.getenv("BOOTSTRAP_ON_STARTUP", "true").lower() == "true"
+SERVICE_NAME              = os.getenv("SERVICE_NAME", "data-ingestion-service")
+INTERNAL_API_KEY          = os.getenv("INTERNAL_API_KEY", "")
+REC_SERVICE_URL           = os.getenv("REC_SERVICE_URL",           "http://recommendation-service:8002")
+NOTIFICATION_SERVICE_URL  = os.getenv("NOTIFICATION_SERVICE_URL",  "http://notification_service:8007")
+
+
+async def _notify_recommendation_reload() -> None:
+    """Pings the recommendation service to reload profiles immediately after bootstrap."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{REC_SERVICE_URL}/internal/reload",
+                headers={"x-internal-secret": INTERNAL_API_KEY},
+            )
+        if resp.status_code == 200:
+            log.info("recommendation_reload_triggered", result=resp.json())
+        else:
+            log.warning("recommendation_reload_non_200", status=resp.status_code)
+    except Exception as exc:
+        log.warning(f"recommendation_reload_failed: {exc}")
+
+
+async def _broadcast_match_notifications() -> None:
+    """
+    After profiles are loaded into the recommendation service, fan out
+    match notifications in both directions:
+      • For every buyer  → notify each high-scoring matched farmer
+      • For every farmer → notify each high-scoring matched buyer
+    Threshold ≥ 0.20 keeps noise low while still catching real overlap.
+    """
+    headers = {"x-internal-secret": INTERNAL_API_KEY}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            buyers  = await conn.fetch(
+                "SELECT buyer_id, name, district, preferred_crops FROM buyer_features"
+            )
+            farmers = await conn.fetch(
+                "SELECT farmer_id, name, district, crops_offered FROM farmer_features"
+            )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # ── buyers → notify matched farmers ───────────────────────────────
+            for b in buyers:
+                try:
+                    r = await client.get(
+                        f"{REC_SERVICE_URL}/recommend/farmers-for-buyer/{b['buyer_id']}",
+                        params={"top_n": 5},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    crops = ", ".join((b["preferred_crops"] or [])[:2]) or "your interests"
+                    for farmer in r.json().get("recommended_farmers", []):
+                        if farmer.get("matchScore", 0) < 0.20:
+                            continue
+                        await client.post(
+                            f"{NOTIFICATION_SERVICE_URL}/internal/notify",
+                            json={
+                                "event":     "system",
+                                "farmer_id": farmer["id"],
+                                "meta": {
+                                    "message": (
+                                        f"{b['name']} from {b['district'] or 'Uganda'} "
+                                        f"is looking for {crops} — they match your produce. "
+                                        f"See them on your home feed."
+                                    )
+                                },
+                            },
+                            headers=headers,
+                        )
+                except Exception as exc:
+                    log.warning("broadcast_buyer_match_failed", buyer=b["buyer_id"], error=str(exc))
+
+            # ── farmers → notify matched buyers ───────────────────────────────
+            for f in farmers:
+                try:
+                    r = await client.get(
+                        f"{REC_SERVICE_URL}/recommend/buyers-for-farmer/{f['farmer_id']}",
+                        params={"top_n": 5},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    crops = ", ".join((f["crops_offered"] or [])[:2]) or "fresh produce"
+                    for buyer in r.json().get("recommended_buyers", []):
+                        if buyer.get("matchScore", 0) < 0.20:
+                            continue
+                        await client.post(
+                            f"{NOTIFICATION_SERVICE_URL}/internal/notify",
+                            json={
+                                "event":    "system",
+                                "buyer_id": buyer["id"],
+                                "meta": {
+                                    "message": (
+                                        f"{f['name']} from {f['district'] or 'Uganda'} "
+                                        f"grows {crops} — matching what you're looking for. "
+                                        f"See them on your home feed."
+                                    )
+                                },
+                            },
+                            headers=headers,
+                        )
+                except Exception as exc:
+                    log.warning("broadcast_farmer_match_failed", farmer=f["farmer_id"], error=str(exc))
+
+        log.info("match_broadcast_complete", buyers=len(buyers), farmers=len(farmers))
+
+    except Exception as exc:
+        log.warning(f"broadcast_match_notifications_failed: {exc}")
+
+_stream: TransactionStream | None = None
+_bootstrap_lock = asyncio.Lock()
+
+
+async def _run_bootstrap() -> dict:
+    from .bootstrap.auth_bootstrap import bootstrap_farmers, bootstrap_buyers
+    from .bootstrap.order_bootstrap import bootstrap_orders
+    from .bootstrap.listing_bootstrap import bootstrap_listings, bootstrap_market_bootstrap
+
+    await bootstrap_market_bootstrap()
+    farmers  = await bootstrap_farmers()
+    buyers   = await bootstrap_buyers()
+    orders   = await bootstrap_orders()
+    listings = await bootstrap_listings()
+    return {"farmers": farmers, "buyers": buyers, "orders": orders, "listings": listings}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _stream
+
+    # Initialise connection pool
+    await get_pool()
+    log.info("postgres_pool_ready")
+
+    # Bootstrap if tables are empty and flag is set
+    if BOOTSTRAP_ON_STARTUP:
+        async with _bootstrap_lock:
+            needed = await is_bootstrap_needed()
+            if needed:
+                log.info("bootstrap_starting")
+                try:
+                    result = await _run_bootstrap()
+                    log.info("bootstrap_complete", **result)
+                    await _notify_recommendation_reload()
+                    await _broadcast_match_notifications()
+                except Exception as exc:
+                    log.error(f"bootstrap_failed: {exc}")
+            else:
+                log.info("bootstrap_skipped_tables_not_empty")
+
+    # Start transaction stream consumer
+    _stream = TransactionStream()
+    _stream.start()
+    log.info("transaction_stream_started")
+
+    yield
+
+    if _stream:
+        _stream.stop()
+    await close_pool()
+    log.info("data_ingestion_service_stopped")
+
+
+app = FastAPI(title="Soko Data Ingestion Service", version="2.0.0", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return await full_health_check()
+
+
+@app.post("/bootstrap")
+async def trigger_bootstrap(background_tasks: BackgroundTasks):
+    """
+    Manually triggers a full bootstrap regardless of table state.
+    Used by `make ingest-bootstrap`.
+    """
+    async def _do_bootstrap():
+        async with _bootstrap_lock:
+            log.info("manual_bootstrap_triggered")
+            result = await _run_bootstrap()
+            log.info("manual_bootstrap_complete", **result)
+            await _notify_recommendation_reload()
+            await _broadcast_match_notifications()
+
+    background_tasks.add_task(_do_bootstrap)
+    return {"message": "Bootstrap triggered — running in background"}
+
+
+@app.get("/bootstrap/status", response_model=BootstrapStatusResponse)
+async def bootstrap_status():
+    from .feature_store import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        farmers  = await conn.fetchval("SELECT COUNT(*) FROM farmer_features")
+        buyers   = await conn.fetchval("SELECT COUNT(*) FROM buyer_features")
+        orders   = await conn.fetchval(
+            "SELECT COUNT(*) FROM price_observations WHERE source = 'soko_order'"
+        )
+        coverage = await conn.fetchval("SELECT COUNT(*) FROM coverage_map")
+
+    return BootstrapStatusResponse(
+        farmers_ingested=farmers,
+        buyers_ingested=buyers,
+        orders_ingested=orders,
+        coverage_pairs=coverage,
+        already_bootstrapped=(farmers > 0 or buyers > 0),
+    )
+
+
+@app.post("/ingest/order-event")
+async def ingest_order_event(payload: IngestOrderEventPayload):
+    """
+    Accepts a transaction event forwarded by kafka-agent (or called directly).
+    Processes as a price observation.
+    """
+    from .transformers.price_transformer import transform_transaction_event
+    from .feature_store import insert_price_observation
+
+    rec = transform_transaction_event(payload.model_dump())
+    if rec is None:
+        return {"status": "skipped", "reason": "not a purchase_completed or zero price"}
+
+    inserted = await insert_price_observation(rec)
+    return {"status": "inserted" if inserted else "rejected_outlier"}
+
+
+@app.post("/ingest/user-created")
+async def ingest_user_created(payload: UserCreatedPayload):
+    """
+    Syncs a newly-registered user to the ML feature store immediately,
+    then triggers a recommendation-service profile reload.
+    Called by user-service as a fire-and-forget background task after account creation.
+    """
+    from .transformers.farmer_transformer import transform_farmer
+    from .transformers.buyer_transformer import transform_buyer
+    from .feature_store import upsert_farmer, upsert_buyer
+
+    role = payload.role.lower()
+
+    if role in ("farmer", "both"):
+        record = transform_farmer({
+            "id":            payload.id,
+            "name":          payload.full_name,
+            "district":      payload.district or "",
+            "specialties":   payload.specialties or [],
+            "averageRating": 0.0,
+            "totalSales":    0,
+            "totalListings": 0,
+        })
+        await upsert_farmer(record)
+
+    if role in ("buyer", "both"):
+        record = transform_buyer({
+            "id":          payload.id,
+            "name":        payload.full_name,
+            "district":    payload.district or "",
+            "interests":   payload.interests or [],
+            "totalOrders": 0,
+            "totalSpent":  0,
+        })
+        await upsert_buyer(record)
+
+    await _notify_recommendation_reload()
+    log.info("user_created_synced", user_id=payload.id, role=role)
+    return {"status": "synced", "role": role}
+
+
+@app.get("/gaps/summary")
+async def gap_summary():
+    return await get_gap_summary()
+
+
+@app.get("/coverage")
+async def coverage():
+    return await get_all_coverage()

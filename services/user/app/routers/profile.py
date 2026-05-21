@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.core.dependencies import get_current_user_id
 from app.models.user import UserProfile
-from app.schemas.schemas import AuthenticatedUser, FarmerProfile, UpdateProfile, UserRole
-from app.helpers.builders import build_authenticated_user, build_farmer_profile
+from app.schemas.schemas import AuthenticatedUser, BuyerPublicProfile, FarmerProfile, UpdateProfile, UserRole
+from app.helpers.builders import build_authenticated_user, build_farmer_profile, make_initials
 import uuid
 
 router = APIRouter(tags=["Profile"])
@@ -89,6 +89,58 @@ def get_farmers(
         build_farmer_profile(farmer, viewer_id=x_user_id, db=db)
         for farmer in farmers
     ]
+
+@router.get("/buyers", response_model=list[AuthenticatedUser])
+def get_buyers(
+    district:  Optional[str]  = Query(default=None),
+    page:      int            = Query(default=1, ge=1),
+    limit:     int            = Query(default=100, le=500),
+    db: Session               = Depends(get_db)
+):
+    """
+    Returns all users with role buyer or both.
+    Used by data-ingestion-service bootstrap to populate buyer_features table.
+    """
+    from app.helpers.builders import build_authenticated_user
+    q = db.query(UserProfile).filter(
+        UserProfile.role.in_([UserRole.buyer, UserRole.both])
+    )
+    if district:
+        q = q.filter(UserProfile.district == district)
+
+    buyers = q.order_by(UserProfile.created_at.desc()) \
+               .offset((page - 1) * limit).limit(limit).all()
+    return [build_authenticated_user(b) for b in buyers]
+
+
+@router.get("/buyers/{user_id}", response_model=BuyerPublicProfile)
+def get_buyer_profile(user_id: str, db: Session = Depends(get_db)):
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    user = db.query(UserProfile).filter(UserProfile.id == uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role not in (UserRole.buyer, UserRole.both):
+        raise HTTPException(status_code=404, detail="User is not a buyer")
+
+    interests = [i.strip() for i in user.interests.split(",") if i.strip()] if user.interests else []
+    bs = user.buyer_stats
+
+    return BuyerPublicProfile(
+        id=str(user.id),
+        name=user.full_name or "",
+        initials=make_initials(user.full_name or user.email),
+        avatarUrl=user.avatar_url,
+        district=user.district or "",
+        verified=user.verified,
+        interests=interests,
+        memberSince=user.created_at.isoformat(),
+        totalOrders=bs.total_orders if bs else None,
+    )
+
 
 @router.get("/{user_id}", response_model=FarmerProfile)
 def get_farmer_profile(user_id: str, db: Session = Depends(get_db)):

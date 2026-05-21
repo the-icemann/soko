@@ -1,5 +1,3 @@
-import os
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -10,13 +8,12 @@ from .interaction_store import InteractionStore
 log = structlog.get_logger()
 
 
-def _parse_list_field(value) -> list[str]:
-    """Parse a comma-separated string or pass-through a list."""
-    if pd.isna(value) or value == "":
-        return []
+def _parse_list_field(value) -> list:
     if isinstance(value, list):
         return value
-    return [v.strip() for v in str(value).split(",") if v.strip()]
+    if not value:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -35,34 +32,29 @@ def _safe_float(value, default: float = 0.0) -> float:
 
 class ProfileStore:
     """
-    Loads farmer and buyer profile DataFrames from CSV at startup.
-    CSV columns mirror UserProfile / FarmerStats / BuyerStats field names
-    so real user data can be swapped in without transformation.
+    Holds farmer and buyer DataFrames loaded from the ML feature store (Postgres).
+    Call reload() to refresh from the database without restarting the service.
     """
 
-    def __init__(self, farmers_path: str, buyers_path: str):
-        self._farmers_path = farmers_path
-        self._buyers_path = buyers_path
+    def __init__(self) -> None:
         self.farmers: pd.DataFrame = pd.DataFrame()
-        self.buyers: pd.DataFrame = pd.DataFrame()
+        self.buyers:  pd.DataFrame = pd.DataFrame()
 
-    def load(self) -> tuple[int, int]:
+    async def reload(self) -> tuple[int, int]:
+        """Load or refresh profiles from soko_ml_db. Never raises."""
+        from .feature_store_client import load_farmers, load_buyers
         try:
-            self.farmers = pd.read_csv(self._farmers_path)
-            # specialties: comma-sep crops grown (UserProfile.specialties)
-            self.farmers["specialties"] = self.farmers["specialties"].apply(_parse_list_field)
-            log.info("farmers_loaded", count=len(self.farmers))
-        except FileNotFoundError:
-            log.warning("farmers_file_not_found", path=self._farmers_path)
+            self.farmers = await load_farmers()
+        except Exception as exc:
+            log.error(f"Failed to load farmers from feature store: {exc}")
+            # Keep existing data rather than going empty
 
         try:
-            self.buyers = pd.read_csv(self._buyers_path)
-            # interests: comma-sep preferred crops (UserProfile.interests)
-            self.buyers["interests"] = self.buyers["interests"].apply(_parse_list_field)
-            log.info("buyers_loaded", count=len(self.buyers))
-        except FileNotFoundError:
-            log.warning("buyers_file_not_found", path=self._buyers_path)
+            self.buyers = await load_buyers()
+        except Exception as exc:
+            log.error(f"Failed to load buyers from feature store: {exc}")
 
+        log.info("profiles_reloaded", farmers=len(self.farmers), buyers=len(self.buyers))
         return len(self.farmers), len(self.buyers)
 
     def get_farmer(self, farmer_id: str) -> Optional[pd.Series]:
@@ -135,6 +127,7 @@ class Recommender:
         scored = [
             (self._score_farmer_for_buyer(farmer, buyer, buyer_id), farmer)
             for _, farmer in self.profiles.farmers.iterrows()
+            if str(farmer["id"]) != buyer_id
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -191,6 +184,7 @@ class Recommender:
         scored = [
             (self._score_buyer_for_farmer(buyer, farmer, max_spend), buyer)
             for _, buyer in self.profiles.buyers.iterrows()
+            if str(buyer["id"]) != farmer_id
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
 

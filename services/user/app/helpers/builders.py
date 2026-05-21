@@ -12,6 +12,8 @@ def make_initials(name: str) -> str:
 def build_authenticated_user(user: UserProfile) -> AuthenticatedUser:
     fs = user.farmer_stats
     bs = user.buyer_stats
+    specialties = [s.strip() for s in user.specialties.split(",") if s.strip()] if user.specialties else []
+    interests   = [i.strip() for i in user.interests.split(",")   if i.strip()] if user.interests   else []
     return AuthenticatedUser(
         id=str(user.id),
         name=user.full_name or "",
@@ -27,6 +29,8 @@ def build_authenticated_user(user: UserProfile) -> AuthenticatedUser:
         memberSince=user.created_at.isoformat(),
         farmerBio=user.farmer_bio,
         farmName=user.farm_name,
+        specialties=specialties,
+        interests=interests,
         totalOrders=bs.total_orders     if bs else None,
         totalSpent=bs.total_spent       if bs else None,
         wishlistCount=bs.wishlist_count if bs else None,

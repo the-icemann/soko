@@ -35,7 +35,7 @@ class MessageOut(BaseModel):
 
 
 class StartConversationPayload(BaseModel):
-    farmer_id:     str
+    recipient_id:  str
     listing_id:    Optional[str] = None
     first_message: str
 

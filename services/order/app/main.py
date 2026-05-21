@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.db.database import Base, engine
-from app.routers import orders
+from app.routers import internal, orders
 
 
 @asynccontextmanager
@@ -17,7 +17,7 @@ app = FastAPI(
     root_path="/orders"
 )
 
-#app.include_router(internal.router, prefix="/internal")
+app.include_router(internal.router, prefix="/internal")
 app.include_router(orders.router)
 
 

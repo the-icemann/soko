@@ -127,6 +127,45 @@ def get_farmer_listings(
     return result
 
 
+@router.post("/farmer/{farmer_id}/request-listing", status_code=200)
+async def request_listing_from_farmer(
+    farmer_id: str,
+    buyer_id: str = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    """Buyer signals interest in a farmer who has no active listings — notifies the farmer."""
+    has_listing = db.query(Listing.id).filter(
+        Listing.farmer_id == uuid.UUID(farmer_id),
+        Listing.status    == ListingStatus.active,
+    ).first()
+
+    if has_listing:
+        return {"notified": False, "reason": "farmer_has_listings"}
+
+    try:
+        buyer_info = await fetch_farmer_snapshot(buyer_id)
+        buyer_name = buyer_info.get("full_name") or buyer_info.get("name") or "A buyer"
+    except Exception:
+        buyer_name = "A buyer"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.NOTIFICATION_SERVICE_URL}/internal/notify",
+                json={
+                    "event":      "buyer_interest",
+                    "farmer_id":  farmer_id,
+                    "actor_name": buyer_name,
+                },
+                headers={"x-internal-secret": settings.INTERNAL_SECRET},
+                timeout=4.0,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to notify farmer {farmer_id} of buyer interest: {e}")
+
+    return {"notified": True}
+
+
 # ── Farmer — my own listings (all statuses)
 @router.get("/me", response_model=list[ListingOut])
 def get_my_listings(

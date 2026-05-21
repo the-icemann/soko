@@ -1,14 +1,16 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 
 from .cache import (
     get_redis_client,
     get_cached_farmers, set_cached_farmers,
     get_cached_buyers, set_cached_buyers,
 )
+from .feature_store_client import close_pool
 from .interaction_store import InteractionStore
 from .kafka_consumer import InteractionConsumer
 from .recommender import ProfileStore, Recommender
@@ -26,34 +28,54 @@ structlog.configure(
 )
 log = structlog.get_logger()
 
-FARMERS_PATH = os.getenv("FARMERS_DATA_PATH", "/app/data/raw/farmers.csv")
-BUYERS_PATH = os.getenv("BUYERS_DATA_PATH", "/app/data/raw/buyers.csv")
-DEFAULT_TOP_N = int(os.getenv("DEFAULT_TOP_N", "5"))
-SERVICE_NAME = os.getenv("SERVICE_NAME", "recommendation-service")
+DEFAULT_TOP_N              = int(os.getenv("DEFAULT_TOP_N", "5"))
+SERVICE_NAME               = os.getenv("SERVICE_NAME", "recommendation-service")
+PROFILE_REFRESH_INTERVAL   = int(os.getenv("PROFILE_REFRESH_INTERVAL_SECONDS", "900"))
+INTERNAL_API_KEY           = os.getenv("INTERNAL_API_KEY", "")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    profile_store = ProfileStore(FARMERS_PATH, BUYERS_PATH)
-    n_farmers, n_buyers = profile_store.load()
+    profile_store = ProfileStore()
+
+    # Initial load — exit if Postgres is unreachable (service cannot function without profiles)
+    try:
+        n_farmers, n_buyers = await profile_store.reload()
+    except Exception as exc:
+        log.critical(f"Cannot load profiles from feature store at startup: {exc}")
+        raise SystemExit(1)
 
     interaction_store = InteractionStore()
-    redis_client = await get_redis_client()
-    recommender = Recommender(profile_store, interaction_store)
+    redis_client      = await get_redis_client()
+    recommender       = Recommender(profile_store, interaction_store)
 
     consumer = InteractionConsumer(interaction_store)
     consumer.start()
 
-    app.state.recommender = recommender
-    app.state.redis = redis_client
+    app.state.recommender   = recommender
+    app.state.redis         = redis_client
     app.state.profile_store = profile_store
-    app.state.consumer = consumer
+    app.state.consumer      = consumer
 
     log.info("recommendation_service_started", farmers=n_farmers, buyers=n_buyers)
+
+    # Periodic reload task
+    async def _reload_loop():
+        while True:
+            await asyncio.sleep(PROFILE_REFRESH_INTERVAL)
+            try:
+                await profile_store.reload()
+            except Exception as exc:
+                log.warning(f"Periodic profile reload failed: {exc}")
+
+    reload_task = asyncio.create_task(_reload_loop())
+
     yield
 
+    reload_task.cancel()
     consumer.stop()
     await redis_client.aclose()
+    await close_pool()
     log.info("recommendation_service_stopped")
 
 
@@ -71,10 +93,32 @@ async def health():
     )
 
 
+def _check_identity(path_id: str, x_user_id: str | None, x_user_role: str | None) -> None:
+    """
+    Enforce that the requesting user can only access their own recommendations.
+    Admins and internal callers (no header) bypass this check.
+    Raises 403 if the path ID doesn't match the JWT-derived user ID.
+    """
+    if x_user_id is None:
+        return
+    if x_user_role in ("admin",):
+        return
+    if x_user_id != path_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only request recommendations for your own account.",
+        )
+
+
 @app.get("/recommend/farmers-for-buyer/{buyer_id}", response_model=FarmersForBuyerResponse)
 async def farmers_for_buyer(
-    buyer_id: str, top_n: int = Query(default=DEFAULT_TOP_N, ge=1, le=50)
+    buyer_id: str,
+    top_n: int = Query(default=DEFAULT_TOP_N, ge=1, le=50),
+    x_user_id:   str | None = Header(default=None),
+    x_user_role: str | None = Header(default=None),
 ):
+    _check_identity(buyer_id, x_user_id, x_user_role)
+
     redis = app.state.redis
     recommender: Recommender = app.state.recommender
 
@@ -102,8 +146,13 @@ async def farmers_for_buyer(
 
 @app.get("/recommend/buyers-for-farmer/{farmer_id}", response_model=BuyersForFarmerResponse)
 async def buyers_for_farmer(
-    farmer_id: str, top_n: int = Query(default=DEFAULT_TOP_N, ge=1, le=50)
+    farmer_id: str,
+    top_n: int = Query(default=DEFAULT_TOP_N, ge=1, le=50),
+    x_user_id:   str | None = Header(default=None),
+    x_user_role: str | None = Header(default=None),
 ):
+    _check_identity(farmer_id, x_user_id, x_user_role)
+
     redis = app.state.redis
     recommender: Recommender = app.state.recommender
 
@@ -127,3 +176,20 @@ async def buyers_for_farmer(
         cached=False,
         recommended_buyers=[BuyerRecommendation(**b) for b in recommendations],
     )
+
+
+@app.post("/internal/reload")
+async def internal_reload(x_internal_secret: str | None = Header(default=None)):
+    """
+    Triggers an immediate profile reload from the feature store.
+    Called by data-ingestion-service after bootstrap completes so new users
+    appear in recommendations without waiting for the 15-minute timer.
+    Protected by the shared internal secret.
+    """
+    if INTERNAL_API_KEY and x_internal_secret != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid internal secret")
+
+    profile_store: ProfileStore = app.state.profile_store
+    n_farmers, n_buyers = await profile_store.reload()
+    log.info("internal_reload_triggered", farmers=n_farmers, buyers=n_buyers)
+    return {"status": "reloaded", "farmers": n_farmers, "buyers": n_buyers}

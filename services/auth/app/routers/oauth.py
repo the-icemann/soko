@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from authlib.integrations.starlette_client import OAuth
@@ -15,6 +15,8 @@ from app.core.security import (
 from app.core.config import settings
 from app.schemas.auth import CompleteProfileRequest
 import httpx
+
+from .auth import _sync_user_to_ml
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +73,12 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
                 detail="An account with this email already exists. Please log in with your password."
             )
 
-        # Returning OAuth user — issue real tokens immediately
-        access_token  = create_access_token(str(user.id), user.role.value, user.email)
-        refresh_token = create_refresh_token(str(user.id))
-        response = RedirectResponse(url=f"{settings.FRONTEND_URL}/marketplace")
-        _set_auth_cookies(response, access_token, refresh_token)
-        return response
+        # Returning OAuth user — pass token to SPA via query param so the
+        # frontend zustand store can pick it up without relying on httpOnly cookies.
+        access_token = create_access_token(str(user.id), user.role.value, user.email)
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/auth/complete-profile?access_token={access_token}"
+        )
 
     # ── 3. New user — skeleton credential, no commit yet
     user = AuthCredential(
@@ -117,6 +119,7 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 @router.post("/complete-profile")
 async def complete_profile(
     body: CompleteProfileRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     setup_token: str | None = Cookie(default=None),
 ):
@@ -185,7 +188,22 @@ async def complete_profile(
     access_token  = create_access_token(str(user.id), user.role.value, user.email)
     refresh_token = create_refresh_token(str(user.id))
 
-    response = JSONResponse({"message": "Profile complete", "role": user.role.value})
+    # Sync new OAuth user to ML feature store so recommendations work immediately
+    background_tasks.add_task(
+        _sync_user_to_ml,
+        str(user.id),
+        body.role.value,
+        name,
+        body.district,
+        body.specialties,
+        body.interests,
+    )
+
+    response = JSONResponse({
+        "message": "Profile complete",
+        "role": user.role.value,
+        "access_token": access_token,
+    })
     _set_auth_cookies(response, access_token, refresh_token)
     _clear_setup_cookie(response)
     return response

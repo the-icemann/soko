@@ -15,18 +15,23 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install ruff
         run: pip install ruff
 
       - name: Lint all services
         run: |
-          ruff check services/auth/app \
-                        services/farmer/app \
-                        services/buyer/app \
-                        services/produce/app \
-                        services/recommendation/app
+          ruff check \
+            services/auth/app \
+            services/user/app \
+            services/produce/app \
+            services/order/app \
+            services/payment/app \
+            services/notification/app \
+            services/message/app \
+            services/blog/app \
+            services/ussd/app
 
   integration-tests:
     name: Integration Tests
@@ -36,25 +41,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # CI uses dev defaults — no real secrets needed
+      - name: Create bridge network for ML stack
+        run: docker network create soko-ml-bridge || true
+
       - name: Build and start services
         run: docker compose up --build -d
-        timeout-minutes: 10
+        timeout-minutes: 15
 
-      - name: Wait for all services to be healthy
+      - name: Wait for all core services to be healthy
         run: |
-          echo "Waiting for all 5 services to respond..."
-          for port in 8001 8002 8003 8004 8005; do
+          echo "Waiting for core services..."
+          for port in 8001 8002 8003 8004 8005 8007 8008 8009; do
             for i in $(seq 1 40); do
               if curl -sf http://localhost:${port}/health > /dev/null 2>&1; then
-                echo "Port ${port} is up."
+                echo "  :${port} up"
                 break
               fi
               if [ "$i" = "40" ]; then
-                echo "Timed out waiting for port ${port}"
+                echo "  :${port} timed out"
                 docker compose logs
                 exit 1
               fi
-              echo "Port ${port} not ready, attempt $i — waiting 5s..."
               sleep 5
             done
           done
@@ -62,7 +70,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: pip install -r tests/integration/requirements.txt
