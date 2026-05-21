@@ -143,6 +143,15 @@ def destroy_user_profiles(all_user_ids: list[str]) -> None:
          f"DELETE FROM user_profiles   WHERE id          IN ({lit});")
 
 
+def destroy_notifications(all_user_ids: list[str]) -> None:
+    if not all_user_ids:
+        return
+    print("  notifications ...")
+    lit = ids_literal(all_user_ids)
+    psql("notification_db", "notification_user", "notification_db",
+         f"DELETE FROM notifications WHERE user_id IN ({lit});")
+
+
 def destroy_auth_credentials() -> None:
     print("  auth credentials (@sokodev.ug accounts) ...")
     psql("auth_db", "auth_user", "auth_db",
@@ -193,6 +202,7 @@ def main() -> None:
     destroy_product_reviews(buyer_ids)
     destroy_listings(farmer_ids)
     destroy_messages(all_ids)
+    destroy_notifications(all_ids)
     destroy_payments(order_ids)
     destroy_orders(buyer_ids)
     destroy_user_profiles(all_ids)
