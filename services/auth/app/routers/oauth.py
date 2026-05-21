@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -17,11 +18,9 @@ from app.core.security import (
 )
 from app.core.config import settings
 from app.schemas.auth import CompleteProfileRequest
-
 from .auth import _sync_user_to_ml
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(tags=["OAuth"])
 
 _GOOGLE_AUTH_URL  = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -29,34 +28,40 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _GOOGLE_INFO_URL  = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
+def _make_state() -> str:
+    s = URLSafeTimedSerializer(settings.SECRET_KEY, salt="google-oauth-state")
+    return s.dumps(secrets.token_hex(16))
+
+
+def _verify_state(state: str) -> bool:
+    s = URLSafeTimedSerializer(settings.SECRET_KEY, salt="google-oauth-state")
+    try:
+        s.loads(state, max_age=300)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
+
+
 @router.get("/google/login")
 async def google_login():
-    state = secrets.token_urlsafe(32)
     auth_url = _GOOGLE_AUTH_URL + "?" + urlencode({
         "client_id":     settings.GOOGLE_CLIENT_ID,
         "redirect_uri":  settings.GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope":         "openid email profile",
-        "state":         state,
+        "state":         _make_state(),
         "access_type":   "online",
     })
-    response = RedirectResponse(url=auth_url)
-    response.set_cookie(
-        key="_oauth_state", value=state,
-        httponly=True, secure=True, samesite="lax",
-        max_age=300, path="/",
-    )
-    return response
+    return RedirectResponse(url=auth_url)
 
 
 @router.get("/google/callback")
 async def google_callback(request: Request, db: Session = Depends(get_db)):
 
-    # ── 1. CSRF state check (cookie vs URL param)
-    state_cookie = request.cookies.get("_oauth_state")
-    state_param  = request.query_params.get("state")
-    if not state_cookie or state_cookie != state_param:
-        logger.error("OAuth state mismatch — possible CSRF or stale session")
+    # ── 1. Verify CSRF state (HMAC-signed, no storage needed)
+    state = request.query_params.get("state")
+    if not state or not _verify_state(state):
+        logger.error("OAuth state invalid or expired")
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     error = request.query_params.get("error")
