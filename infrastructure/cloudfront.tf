@@ -21,9 +21,9 @@ resource "aws_cloudfront_distribution" "frontend" {
   default_root_object = "index.html"
   price_class         = "PriceClass_200" # includes South Africa edge nodes
 
-  aliases = var.domain_name != "" ? ["app.${var.domain_name}"] : []
+  aliases = var.domain_name != "" ? [var.domain_name, "www.${var.domain_name}"] : []
 
-  # depends_on = [aws_acm_certificate_validation.frontend]  # uncomment with domain
+  depends_on = [aws_acm_certificate_validation.frontend]
 
   # S3 origin — serves static frontend assets
   origin {
@@ -178,12 +178,10 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
-    # Uncomment below and remove line above when domain is ready:
-    # acm_certificate_arn            = aws_acm_certificate_validation.frontend[0].certificate_arn
-    # ssl_support_method             = "sni-only"
-    # minimum_protocol_version       = "TLSv1.2_2021"
-    # cloudfront_default_certificate = false
+    cloudfront_default_certificate = var.domain_name == ""
+    acm_certificate_arn            = var.domain_name != "" ? aws_acm_certificate_validation.frontend[0].certificate_arn : null
+    ssl_support_method             = var.domain_name != "" ? "sni-only" : null
+    minimum_protocol_version       = var.domain_name != "" ? "TLSv1.2_2021" : null
   }
 
   tags = { Name = "soko-frontend-cdn" }

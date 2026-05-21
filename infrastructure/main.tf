@@ -31,16 +31,16 @@ provider "aws" {
   }
 }
 
-# CloudFront ACM certificates must live in us-east-1 — uncomment when adding domain
-# provider "aws" {
-#   alias  = "us_east_1"
-#   region = "us-east-1"
-#
-#   default_tags {
-#     tags = {
-#       Project     = "soko"
-#       Environment = var.environment
-#       ManagedBy   = "terraform"
-#     }
-#   }
-# }
+# CloudFront ACM certificates must live in us-east-1
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Project     = "soko"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}
