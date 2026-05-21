@@ -823,37 +823,30 @@ def create_listings(farmers: list) -> list:
 
 def seed_listing_images(listings: list) -> None:
     """
-    Downloads a crop-appropriate image from Unsplash and uploads it to each
-    listing via the existing multipart endpoint (which stores to Cloudinary).
-    Skips gracefully if the download or upload fails.
+    Registers a crop-appropriate Unsplash URL directly on each listing via the
+    internal /images/url endpoint — no Cloudinary upload, no interference with
+    how real users upload images.  Skips gracefully if the endpoint is unavailable.
     """
-    print("\n── Phase 3b: Seeding listing images ────────────────────────────")
-    headers_common = {"User-Agent": "Soko-Seed/1.0 (dev)"}
+    import os
+    internal_secret = os.getenv("INTERNAL_SECRET", "")
+    if not internal_secret:
+        print("\n── Phase 3b: Skipping images (INTERNAL_SECRET not set) ─────────")
+        return
 
+    print("\n── Phase 3b: Seeding listing images (direct URL, no Cloudinary) ─")
     for listing in listings:
         img_url = pick_crop_image(listing["name"])
         try:
-            dl = requests.get(img_url, timeout=15, headers=headers_common, allow_redirects=True)
-            if not dl.ok:
-                print(f"  ~ Download failed ({dl.status_code}): {listing['name']}")
-                continue
-
-            content_type = dl.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-            ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
-            ext = ext_map.get(content_type, "jpg")
-            if content_type not in ext_map:
-                content_type = "image/jpeg"
-
             resp = requests.post(
-                f"{PRODUCE}/listings/{listing['id']}/images",
-                files={"files": (f"photo.{ext}", dl.content, content_type)},
-                headers=farmer_headers(listing["farmer_id"]),
-                timeout=30,
+                f"{PRODUCE}/listings/{listing['id']}/images/url",
+                json={"url": img_url},
+                headers={"X-Internal-Secret": internal_secret},
+                timeout=10,
             )
             if resp.ok:
                 print(f"  ✓ Image: {listing['name']}")
             else:
-                print(f"  ~ Upload failed ({resp.status_code}): {listing['name']}")
+                print(f"  ~ Image failed ({resp.status_code}): {listing['name']}")
         except Exception as e:
             print(f"  ~ Skipped {listing['name']}: {e}")
 

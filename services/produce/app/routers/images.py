@@ -1,7 +1,9 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import farmer_only, get_current_user_id
 from app.db.database import get_db
 from app.helpers.builders import build_listing_out
@@ -77,3 +79,38 @@ def delete_image(
     db.delete(image)
     db.commit()
     return {"deleted": True}
+
+
+# ── Internal seed endpoint ─────────────────────────────────────────────────────
+# Registers an external image URL without a Cloudinary upload.
+# Only reachable with the INTERNAL_SECRET header — never called by real users.
+# public_id is left null so the delete handler skips the Cloudinary call cleanly.
+
+class _SeedImageBody(BaseModel):
+    url: str
+
+
+@router.post("/{listing_id}/images/url", response_model=ListingOut)
+def seed_image_url(
+    listing_id:      str,
+    body:            _SeedImageBody,
+    internal_secret: str | None = Header(None, alias="X-Internal-Secret"),
+    db:              Session    = Depends(get_db),
+):
+    if internal_secret != settings.INTERNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    listing = db.query(Listing).filter(Listing.id == uuid.UUID(listing_id)).first()
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+
+    existing = len(listing.images)
+    db.add(ListingImage(
+        listing_id=listing.id,
+        url=body.url,
+        public_id=None,
+        order=existing,
+    ))
+    db.commit()
+    db.refresh(listing)
+    return build_listing_out(listing)
