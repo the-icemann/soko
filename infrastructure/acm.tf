@@ -52,10 +52,11 @@ resource "aws_acm_certificate_validation" "frontend" {
 
 # Root domain → CloudFront (alias A record — Route 53 supports this for apex domains)
 resource "aws_route53_record" "root" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = data.aws_route53_zone.main[0].zone_id
-  name    = var.domain_name
-  type    = "A"
+  count           = var.domain_name != "" ? 1 : 0
+  zone_id         = data.aws_route53_zone.main[0].zone_id
+  name            = var.domain_name
+  type            = "A"
+  allow_overwrite = true
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name
@@ -66,10 +67,11 @@ resource "aws_route53_record" "root" {
 
 # www → CloudFront
 resource "aws_route53_record" "www" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = data.aws_route53_zone.main[0].zone_id
-  name    = "www.${var.domain_name}"
-  type    = "A"
+  count           = var.domain_name != "" ? 1 : 0
+  zone_id         = data.aws_route53_zone.main[0].zone_id
+  name            = "www.${var.domain_name}"
+  type            = "A"
+  allow_overwrite = true
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name

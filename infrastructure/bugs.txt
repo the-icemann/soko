@@ -1,0 +1,212 @@
+SOKO PRODUCTION DEPLOYMENT — BUG REPORT
+Generated: 2026-05-19
+========================================
+
+1. INFRASTRUCTURE & TERRAFORM
+==============================
+
+BUG-01: SSH connection timeout from GitHub Actions
+  Cause:  Security group restricted SSH (port 22) to a single home IP.
+          GitHub Actions runners use dynamic IPs.
+  Fix:    Set allowed_ssh_cidr = "0.0.0.0/0" in terraform.tfvars.
+
+BUG-02: EC2 /opt/soko was empty after provisioning
+  Cause:  user_data.sh runs set -e and git clone -b main silently failed
+          because the working branch (price_prediction_service) wasn't
+          merged to main yet.
+  Fix:    Manual clone targeting the correct branch:
+            sudo git clone -b price_prediction_service \
+              https://github.com/the-icemann/soko.git /opt/soko
+
+BUG-03: EC2 IP changed between sessions
+  Cause:  terraform destroy + terraform apply re-allocates a new Elastic IP.
+  Fix:    Updated EC2_HOST GitHub secret in both repos:
+            13.244.217.134 -> 13.245.25.42
+
+BUG-04: Secrets Manager "scheduled for deletion" error on re-apply
+  Cause:  terraform destroy soft-deletes secrets; re-running apply fails
+          because the secrets still exist in a pending-deletion state.
+  Fix:    Force-delete before re-applying:
+            aws secretsmanager delete-secret \
+              --force-delete-without-recovery --secret-id soko/platform
+            aws secretsmanager delete-secret \
+              --force-delete-without-recovery --secret-id soko/ml
+
+BUG-05: ACM certificate validation hung for 18+ minutes
+  Cause:  Domain soko-ug.com was not registered yet — Route 53 validation
+          records had nowhere to resolve.
+  Fix:    Registered the domain, then later abandoned the domain approach
+          entirely. Commented out all of acm.tf, disabled the us_east_1
+          provider alias, used CloudFront's default certificate, and removed
+          stale resources from Terraform state:
+            terraform state rm 'aws_acm_certificate.frontend[0]'
+            (and related Route 53 / validation resources)
+
+BUG-06: Two Route 53 hosted zones conflicting
+  Cause:  Domain registration auto-created a second hosted zone. The
+          original manually-created zone was still in Terraform state.
+          NS records pointed to the deleted zone -> SERVFAIL.
+  Fix:    Skipped domain setup entirely for now. All domain-related Terraform
+          is commented out and documented for re-enablement in DEPLOY.md.
+
+BUG-07: Terraform us_east_1 provider config missing after commenting out ACM
+  Cause:  ACM certificate resource was still in Terraform state but the
+          provider alias had been commented out, causing a config error.
+  Fix:    terraform state rm to remove all ACM/Route53 resources before
+          re-applying with the provider commented out.
+
+
+2. GITHUB ACTIONS CI/CD
+========================
+
+BUG-08: GitHub Actions deploy targeting wrong branch
+  Cause:  deploy.yml had git reset --hard origin/main hardcoded. Pushing
+          to price_prediction_service would reset the server to main.
+  Fix:    Changed to:
+            git reset --hard origin/${{ github.ref_name }}
+
+BUG-09: npm ci failing with ERESOLVE peer dependency error
+  Cause:  eslint-plugin-import@2.32.0 declared a peer dependency on
+          ESLint <9 but ESLint v10 was installed.
+  Fix:    Added --legacy-peer-deps to npm ci in the frontend workflow.
+
+BUG-10: package-lock.json out of sync
+  Cause:  Packages were added to the project without running npm install,
+          leaving package-lock.json stale. npm ci is strict and rejects this.
+  Fix:    Ran npm install --legacy-peer-deps locally and committed the
+          updated package-lock.json.
+
+
+3. AWS CLI & SECRETS
+=====================
+
+BUG-11: fetch-secrets.sh failing — AWS CLI not found
+  Cause:  Fresh EC2 instance (after destroy/apply) didn't have the AWS CLI
+          installed. The old instance had it installed manually; user_data
+          did not include the install step.
+  Fix:    Manually installed AWS CLI v2 on the new instance via the official
+          install script.
+
+BUG-12: IAM user missing ACM permissions
+  Cause:  soko_deployment IAM user only had EC2/S3/CloudFront permissions;
+          ACM calls during terraform apply were denied.
+  Fix:    aws iam attach-user-policy \
+            --policy-arn arn:aws:iam::aws:policy/AWSCertificateManagerFullAccess \
+            --user-name soko_deployment
+
+
+4. NGINX / CORS
+================
+
+BUG-13: CORS preflight returning no Access-Control-Allow-Origin
+  Cause:  Multiple failed attempts:
+          Attempt 1 — add_header inside if blocks in server {} context:
+            NGINX silently drops headers set inside if blocks.
+          Attempt 2 — add_header inside if ($request_method = OPTIONS):
+            NGINX does not allow add_header inside if at server level.
+  Fix:    Used a map directive to resolve the allowed origin dynamically
+          ($cors_origin), then placed all four add_header ... always
+          directives directly in the server {} block. OPTIONS preflight uses
+          a simple if ($request_method = OPTIONS) { return 204; } with no
+          headers inside the block — server-level headers apply to all
+          responses including 204.
+
+BUG-14: NGINX container not picking up updated nginx.conf
+  Cause:  The container was running with the old config in memory.
+          Editing the file on disk does not affect a running container.
+  Fix:    docker compose up -d --force-recreate nginx
+          (service is named nginx, not api_gateway)
+
+
+5. FRONTEND BUILD & DEPLOYMENT
+================================
+
+BUG-15: Wrong Vite environment variable name
+  Cause:  The GitHub Actions workflow and all manual builds used
+          VITE_API_BASE_URL, but every file in the frontend source (api.ts,
+          blog.api.ts, etc.) reads import.meta.env.VITE_API_URL.
+          The variable was never injected — BASE_URL was always undefined.
+  Fix:    Updated workflow env key to VITE_API_URL, renamed the GitHub
+          Actions variable, and rebuilt with the correct name.
+
+BUG-16: VITE_API_URL undefined caused requests to go to CloudFront
+  Cause:  fetch("undefinedauth/register", ...) is parsed as a relative URL,
+          resolved against the current page. CloudFront served index.html
+          for that path -> browser tried to parse HTML as JSON ->
+          "Unexpected token '<'".
+  Fix:    Resolved by fixing BUG-15.
+
+BUG-17: Mixed content — HTTPS frontend calling HTTP backend
+  Cause:  Frontend served over HTTPS (CloudFront) while VITE_API_URL pointed
+          at http://13.245.25.42. Browsers block HTTP requests from HTTPS
+          pages entirely.
+  Fix:    Added EC2 as a second CloudFront origin. All API path prefixes now
+          route through CloudFront (HTTPS) to the EC2 origin (HTTP port 80).
+          The browser always speaks HTTPS to CloudFront.
+
+BUG-18: CloudFront rejected bare IP address as origin domain_name
+  Cause:  AWS CloudFront does not accept IP addresses as domain_name for
+          custom origins — only DNS hostnames.
+  Fix:    Used nip.io — a free wildcard DNS service where <ip>.nip.io
+          resolves to that IP. Terraform config:
+            domain_name = "${aws_eip.soko.public_ip}.nip.io"
+
+BUG-19: CloudFront behavior path patterns didn't match NGINX routes
+  Cause:  Initial path list used assumed names that don't match the actual
+          NGINX location blocks, e.g.:
+            /user/*        should be /users/*
+            /produce/*     should be /listings/*
+            /order/*       should be /orders/*
+            /payment/*     should be /payments/*
+            /notification/* should be /notifications/*
+            /blog/*        should be /posts/*
+            /prices/*      should be /ml/price/* (covered by /ml/*)
+            /location/*    should be /ml/location/* (covered by /ml/*)
+          Requests to these paths fell through to the S3 origin and got
+          index.html instead of the API response.
+  Fix:    Read nginx.conf and corrected the list to match actual location
+          blocks:
+            /auth/*  /oauth/*  /users/*  /listings/*  /orders/*
+            /payments/*  /webhook/*  /message/*  /notifications/*
+            /posts/*  /ussd/*  /recommendations/*  /ml/*  /health*
+
+BUG-20: Missing trailing slash on VITE_API_URL caused broken URL
+  Cause:  api.ts builds URLs as `${BASE_URL}${endpoint}` where endpoints
+          have no leading slash (e.g. "auth/register"). With:
+            BASE_URL = "https://d1xay3qieyc2yk.cloudfront.net"
+          the result is:
+            "https://d1xay3qieyc2yk.cloudfront.netauth/register"
+          — a malformed hostname that DNS cannot resolve -> "Failed to fetch".
+  Fix:    Built and deployed with trailing slash:
+            VITE_API_URL=https://d1xay3qieyc2yk.cloudfront.net/
+          Updated the GitHub Actions variable to the same value.
+
+
+SUMMARY TABLE
+=============
+
+#    Area          Root Cause                              Severity
+---  ------------  --------------------------------------  ---------------
+01   Infra         SSH locked to home IP                   Blocked CI
+02   Infra         user_data cloned wrong branch           Blocked first boot
+03   Infra         EC2 IP changed on destroy/apply         Broke CI secret
+04   Infra         Secrets in pending-deletion state       Blocked re-apply
+05   Infra         Domain not registered before cert       18 min hang
+06   Infra         Duplicate Route 53 hosted zones         DNS SERVFAIL
+07   Terraform     State had resources with missing        Apply crash
+                   provider alias
+08   CI            Hardcoded branch in deploy script       Wrong code on server
+09   CI            ESLint peer dep conflict                Build failure
+10   CI            Stale package-lock.json                 Build failure
+11   EC2           AWS CLI not installed on fresh inst.    Secrets fetch failure
+12   IAM           Missing ACM policy on deploy user       Permission denied
+13   NGINX         add_header in if block silently         All API calls blocked
+                   dropped                                 by CORS
+14   Docker        Container not restarted after config    Old NGINX config served
+                   change
+15   Frontend      Wrong env var name (BASE_URL/API_URL)   All API calls undefined
+16   Frontend      Relative URL from undefined base        JSON parse error
+17   Frontend      HTTPS page calling HTTP backend         Mixed content blocked
+18   CloudFront    Bare IP rejected as origin              Terraform apply error
+19   CloudFront    Path patterns didn't match NGINX        API routes went to S3
+20   Frontend      Missing trailing slash on base URL      DNS resolution failure
