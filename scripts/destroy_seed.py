@@ -158,6 +158,23 @@ def destroy_auth_credentials() -> None:
          "DELETE FROM auth_credentials WHERE email LIKE '%@sokodev.ug';")
 
 
+def flush_api_caches() -> None:
+    """Flush Redis caches for produce (db 0) and blog (db 1) services.
+    Both services cache API responses in Redis; without this flush, deleted
+    seed data keeps appearing until TTL expiry (up to 10 min).
+    """
+    print("  Redis API caches (produce db0, blog db1) ...")
+    for db in (0, 1):
+        cmd = [
+            "docker", "compose", "-f", "docker-compose.yml",
+            "exec", "-T", "redis",
+            "redis-cli", "-n", str(db), "FLUSHDB",
+        ]
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        if result.returncode != 0 and result.stderr.strip():
+            print(f"    WARN (redis db{db}): {result.stderr.strip()[:120]}")
+
+
 def reset_ml_feature_store() -> None:
     print("  ML feature store (user_profiles, price_observations, interactions, coverage_gaps) ...")
     ml_compose = str(ROOT / "services" / "soko-ml" / "docker-compose.yml")
@@ -207,6 +224,7 @@ def main() -> None:
     destroy_orders(buyer_ids)
     destroy_user_profiles(all_ids)
     destroy_auth_credentials()
+    flush_api_caches()
     reset_ml_feature_store()
 
     MANIFEST.unlink(missing_ok=True)

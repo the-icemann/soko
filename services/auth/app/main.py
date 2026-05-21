@@ -18,7 +18,7 @@ app = FastAPI(
     root_path="/auth",
 )
 
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)  # ← must be here
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY, https_only=True)  # ← must be here
 
 app.include_router(auth.router)
 app.include_router(oauth.router)
