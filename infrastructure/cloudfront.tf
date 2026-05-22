@@ -98,19 +98,23 @@ resource "aws_cloudfront_distribution" "frontend" {
     max_ttl     = 0
   }
 
-  # complete-profile: forward query_string so the ?access_token= param (set by
-  # the backend after Google OAuth for returning users) reaches the SPA.
+  # complete-profile: must reach EC2 for POST (form submit).
+  # GET returns 404 from the auth service, which CloudFront's custom_error_response
+  # catches and serves index.html so the SPA still loads.
   ordered_cache_behavior {
     path_pattern           = "/auth/complete-profile"
-    target_origin_id       = "s3-frontend"
+    target_origin_id       = "ec2-api"
     viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "PATCH", "POST", "DELETE"]
     cached_methods         = ["GET", "HEAD"]
-    compress               = true
+    compress               = false
+
     forwarded_values {
       query_string = true
-      cookies { forward = "none" }
+      headers      = ["Authorization", "Content-Type", "Accept", "Origin", "X-User-Id", "X-User-Role"]
+      cookies { forward = "all" }
     }
+
     min_ttl     = 0
     default_ttl = 0
     max_ttl     = 0

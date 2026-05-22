@@ -174,6 +174,14 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
     return response
 
 
+@router.get("/complete-profile")
+async def complete_profile_page():
+    # CloudFront routes this path to EC2 so POST can reach the API.
+    # For GET (SPA page load), return 404 — CloudFront's custom_error_response
+    # catches it and serves index.html so the React router handles the route.
+    raise HTTPException(status_code=404, detail="Not found")
+
+
 @router.post("/complete-profile")
 async def complete_profile(
     body: CompleteProfileRequest,
