@@ -67,18 +67,42 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
     user = db.query(AuthCredential).filter(AuthCredential.email == email).first()
 
     if user:
-        if user.oauth_provider is None and user.hashed_password:
+        # Existing password-only account — cannot log in via Google
+        if user.hashed_password and not user.oauth_provider:
             raise HTTPException(
                 status_code=409,
                 detail="An account with this email already exists. Please log in with your password."
             )
 
-        # Returning OAuth user — pass token to SPA via query param so the
-        # frontend zustand store can pick it up without relying on httpOnly cookies.
-        access_token = create_access_token(str(user.id), user.role.value, user.email)
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/auth/complete-profile?access_token={access_token}"
+        access_token  = create_access_token(str(user.id), user.role.value, user.email)
+        refresh_token = create_refresh_token(str(user.id))
+
+        if user.is_profile_complete:
+            # Returning OAuth user — profile already done, hand off token to frontend
+            response = RedirectResponse(
+                url=f"{settings.FRONTEND_URL}/auth/google/callback?access_token={access_token}"
+            )
+            _set_auth_cookies(response, access_token, refresh_token)
+            return response
+
+        # Returning OAuth user — profile still incomplete (e.g. closed tab on first sign-up)
+        # Re-issue a fresh setup token so they can finish
+        setup_token = create_setup_token(
+            user_id=str(user.id),
+            email=email,
+            name=name,
+            avatar_url=avatar_url,
         )
+        response = RedirectResponse(url=f"{settings.FRONTEND_URL}/auth/complete-profile")
+        response.set_cookie(
+            key="setup_token",
+            value=setup_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=60 * 10,
+        )
+        return response
 
     # ── 3. New user — skeleton credential, no commit yet
     user = AuthCredential(
@@ -209,7 +233,7 @@ async def complete_profile(
     return response
 
 
-# Helpers
+# ── Helpers
 
 def _set_auth_cookies(response, access_token: str, refresh_token: str) -> None:
     response.set_cookie(
