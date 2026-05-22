@@ -212,7 +212,7 @@ async def complete_profile(
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(
-                f"{settings.USER_SERVICE_URL}/users",
+                f"{settings.USER_SERVICE_URL}/",
                 json={
                     "id":          str(user.id),
                     "email":       email,
