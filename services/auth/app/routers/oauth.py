@@ -128,9 +128,11 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
         refresh_token = create_refresh_token(str(user.id))
 
         if user.is_profile_complete:
-            # Returning OAuth user — profile already done, hand off token to frontend
+            # Redirect to /auth/sign-in (S3-routed in CloudFront) so the SPA picks up
+            # the token. /auth/google/callback routes to EC2, which would re-enter this
+            # callback handler and fail state verification.
             response = RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/auth/google/callback?access_token={access_token}"
+                url=f"{settings.FRONTEND_URL}/auth/sign-in?access_token={access_token}"
             )
             _set_auth_cookies(response, access_token, refresh_token)
             return response
