@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from starlette.middleware.sessions import SessionMiddleware
 from app.db.session import Base, engine
 from app.core.config import settings
-from app.routers import auth, oauth, bot_auth
+from app.routers import auth, oauth, bot_auth, alert
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,3 +23,4 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(bot_auth.router)
+app.include_router(alert.router)

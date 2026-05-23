@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     REDIS_URL: str = "redis://redis:6379/2"
     BOT_SECRET: str = ""
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_FROM_EMAIL: str = ""
 
     class Config:
         env_file = ".env"
