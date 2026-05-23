@@ -37,6 +37,9 @@ jobs:
             bash scripts/fetch-secrets.sh
             bash scripts/fetch-ml-secrets.sh
 
+            echo "=== Ensuring shared bridge network exists ==="
+            docker network create soko-ml-bridge 2>/dev/null || true
+
             echo "=== Restarting core platform ==="
             docker compose pull --ignore-pull-failures 2>/dev/null || true
             docker compose up -d --build --remove-orphans
@@ -50,7 +53,7 @@ jobs:
 
             echo "=== Verifying health ==="
             sleep 15
-            for port in 8001 8002 8003 8004 8005 8007 8008 8009; do
+            for port in 8001 8002 8003 8004 8005 8007 8008 8009 8080; do
               status=$(curl -sf --max-time 5 http://localhost:${port}/health | jq -r '.status' 2>/dev/null || echo "unreachable")
               echo "Service :${port} -> ${status}"
             done

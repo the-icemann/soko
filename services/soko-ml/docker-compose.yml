@@ -244,13 +244,13 @@ services:
       - SERVICE_NAME=ml-gateway-service
     depends_on:
       price-prediction-service:
-        condition: service_healthy
+        condition: service_started
       recommendation-service:
-        condition: service_healthy
+        condition: service_started
       location-service:
-        condition: service_healthy
+        condition: service_started
       data-ingestion-service:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
