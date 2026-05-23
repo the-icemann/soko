@@ -35,10 +35,6 @@ services:
       - produce_service
       - order_service
       - payment_service
-      - notification_service
-      - message_service
-      - blog_service
-      - ussd_service
     networks:
       - soko_net
       - soko-ml-bridge
@@ -90,9 +86,13 @@ services:
     environment:
       DATABASE_URL:      postgresql://auth_user:${AUTH_DB_PASS:-auth_pass}@auth_db:5432/auth_db
       USER_SERVICE_URL:  http://user_service:8002
+      REDIS_URL:         redis://redis:6379/2
+      BOT_SECRET:        soko-bot-secret-change-in-prod
     depends_on:
       auth_db:
         condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - soko_net
     restart: on-failure
@@ -265,6 +265,7 @@ services:
   message_db:
     image: postgres:15-alpine
     container_name: message_db
+    profiles: [full]
     environment:
       POSTGRES_USER:     message_user
       POSTGRES_PASSWORD: ${MESSAGE_DB_PASS:-message_pass}
@@ -282,6 +283,7 @@ services:
   message_service:
     build: ./services/message
     container_name: message_service
+    profiles: [full]
     ports:
       - "127.0.0.1:8006:8006"
     env_file: ./services/message/.env
@@ -303,6 +305,7 @@ services:
   notification_db:
     image: postgres:15-alpine
     container_name: notification_db
+    profiles: [full]
     environment:
       POSTGRES_USER:     notification_user
       POSTGRES_PASSWORD: ${NOTIFICATION_DB_PASS:-notification_pass}
@@ -320,6 +323,7 @@ services:
   notification_service:
     build: ./services/notification
     container_name: notification_service
+    profiles: [full]
     ports:
       - "127.0.0.1:8007:8007"
     env_file: ./services/notification/.env
@@ -340,6 +344,7 @@ services:
   blog_db:
     image: postgres:15-alpine
     container_name: blog_db
+    profiles: [full]
     environment:
       POSTGRES_USER:     blog_user
       POSTGRES_PASSWORD: ${BLOG_DB_PASS:-blog_pass}
@@ -357,6 +362,7 @@ services:
   blog_service:
     build: ./services/blog
     container_name: blog_service
+    profiles: [full]
     ports:
       - "127.0.0.1:8008:8008"
     env_file: ./services/blog/.env
@@ -379,6 +385,7 @@ services:
   ussd_db:
     image: postgres:15-alpine
     container_name: ussd_db
+    profiles: [full]
     environment:
       POSTGRES_USER:     ussd_user
       POSTGRES_PASSWORD: ${USSD_DB_PASS:-ussd_pass}
@@ -396,6 +403,7 @@ services:
   ussd_service:
     build: ./services/ussd
     container_name: ussd_service
+    profiles: [full]
     ports:
       - "127.0.0.1:8009:8009"
     env_file: ./services/ussd/.env

@@ -6,10 +6,10 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 PESAPAL_BASE = (
-    "https://cybqa.pesapal.com/pesapalv3"   # sandbox
-    if settings.PESAPAL_ENV == "sandbox" else
-    "https://pay.pesapal.com/v3"            # production
-)#
+    "https://cybqa.pesapal.com/pesapalv3"
+    if settings.PESAPAL_SANDBOX else
+    "https://pay.pesapal.com/v3"
+)
 
 # In-memory token cache — avoids hitting PesaPal auth on every request
 _token_cache: dict = {"token": None, "expires_at": None}

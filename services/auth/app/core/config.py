@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     USER_SERVICE_URL:   str
     INGEST_SERVICE_URL: str = "http://data-ingestion-service:8004"
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    REDIS_URL: str = "redis://redis:6379/2"
+    BOT_SECRET: str = ""
 
     class Config:
         env_file = ".env"
