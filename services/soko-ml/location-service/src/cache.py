@@ -78,9 +78,9 @@ async def invalidate_farmer_distances(farmer_id: str) -> None:
 
 # ── Route cache ───────────────────────────────────────────────────────────────
 
-async def get_route(farmer_id: str, crop: str, quantity: float) -> Optional[dict]:
+async def get_route(farmer_id: str, crop: str, quantity: Optional[float]) -> Optional[dict]:
     redis = await get_redis()
-    key   = f"route:{farmer_id}:{crop}:{int(quantity)}"
+    key   = f"route:{farmer_id}:{crop}:{int(quantity or 0)}"
     try:
         val = await redis.get(key)
         return json.loads(val) if val else None
@@ -89,9 +89,9 @@ async def get_route(farmer_id: str, crop: str, quantity: float) -> Optional[dict
         return None
 
 
-async def set_route(farmer_id: str, crop: str, quantity: float, result: dict) -> None:
+async def set_route(farmer_id: str, crop: str, quantity: Optional[float], result: dict) -> None:
     redis = await get_redis()
-    key   = f"route:{farmer_id}:{crop}:{int(quantity)}"
+    key   = f"route:{farmer_id}:{crop}:{int(quantity or 0)}"
     try:
         await redis.setex(key, ROUTE_TTL, json.dumps(result, cls=_Encoder))
     except Exception as exc:
