@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # PesaPal
     PESAPAL_CONSUMER_KEY:     str
     PESAPAL_CONSUMER_SECRET:  str
-    PESAPAL_ENV:              str = "sandbox"       # "sandbox" | "production"
+    PESAPAL_SANDBOX:          bool = True
     PESAPAL_IPN_URL:          str                   # https://api.yourdomain.com/payments/webhook/pesapal/ipn
     PESAPAL_CALLBACK_URL:     str                   # https://api.yourdomain.com/payments/webhook/pesapal/callback
 
