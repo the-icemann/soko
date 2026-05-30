@@ -114,12 +114,30 @@ NOTIFICATION_SERVICE_URL=http://notification_service:8007
 EOF
 chmod 600 "$REPO_DIR/services/message/.env"
 
-# ── User / Produce / Order / Blog — only need INTERNAL_SECRET ─────────────────
-for svc in user produce order blog; do
+# ── User / Order — only need INTERNAL_SECRET ──────────────────────────────────
+for svc in user order; do
   cat > "$REPO_DIR/services/$svc/.env" <<EOF
 INTERNAL_SECRET=$(s INTERNAL_SECRET)
 EOF
   chmod 600 "$REPO_DIR/services/$svc/.env"
 done
+
+# ── Produce Service ───────────────────────────────────────────────────────────
+cat > "$REPO_DIR/services/produce/.env" <<EOF
+INTERNAL_SECRET=$(s INTERNAL_SECRET)
+CLOUDINARY_CLOUD_NAME=$(s CLOUDINARY_CLOUD_NAME)
+CLOUDINARY_API_KEY=$(s CLOUDINARY_API_KEY)
+CLOUDINARY_API_SECRET=$(s CLOUDINARY_API_SECRET)
+EOF
+chmod 600 "$REPO_DIR/services/produce/.env"
+
+# ── Blog Service ──────────────────────────────────────────────────────────────
+cat > "$REPO_DIR/services/blog/.env" <<EOF
+INTERNAL_SECRET=$(s INTERNAL_SECRET)
+CLOUDINARY_CLOUD_NAME=$(s CLOUDINARY_CLOUD_NAME)
+CLOUDINARY_API_KEY=$(s CLOUDINARY_API_KEY)
+CLOUDINARY_API_SECRET=$(s CLOUDINARY_API_SECRET)
+EOF
+chmod 600 "$REPO_DIR/services/blog/.env"
 
 echo "[fetch-secrets] All service .env files written successfully."
